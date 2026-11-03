@@ -2,11 +2,11 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 static class Uninstaller
 {
-    const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\InputTranslate";
+    const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Vibelish";
     const string RunOnceKeyPath = @"Software\Microsoft\Windows\CurrentVersion\RunOnce";
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -18,7 +18,7 @@ static class Uninstaller
     public static string DefaultInstallDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Programs",
-        "InputTranslate");
+        "Vibelish");
 
     public static bool ConfirmAndRun(bool quiet)
     {
@@ -28,11 +28,11 @@ static class Uninstaller
         if (!quiet)
         {
             var detail = installed
-                ? "将删除程序文件、开始菜单/桌面快捷方式和开机自动启动。\n你的设置（%APPDATA%\\InputTranslate）会保留。"
+                ? "将删除程序文件、开始菜单/桌面快捷方式和开机自动启动。\n你的设置（%APPDATA%\\Vibelish）会保留。"
                 : "将删除开始菜单/桌面快捷方式和开机自动启动。\n\n这一份不在安装目录里（" + directory + "），程序文件不会动，需要的话请手动删除。";
             var answer = MessageBox.Show(
-                "确定要卸载「输入翻译」吗？\n\n" + detail,
-                "卸载输入翻译",
+                "确定要卸载「Vibelish」吗？\n\n" + detail,
+                "卸载 Vibelish",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question,
                 MessageBoxDefaultButton.Button2);
@@ -43,7 +43,7 @@ static class Uninstaller
         Run(exe, directory, installed);
         if (!quiet)
         {
-            MessageBox.Show("「输入翻译」已卸载。", "卸载输入翻译", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show("「Vibelish」已卸载。", "卸载 Vibelish", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         return true;
@@ -64,7 +64,7 @@ static class Uninstaller
             var location = key?.GetValue("InstallLocation") as string ?? "";
             return location.Length > 0
                 && string.Equals(full, Normalize(location), StringComparison.OrdinalIgnoreCase)
-                && File.Exists(Path.Combine(full, "InputTranslate.exe"));
+                && File.Exists(Path.Combine(full, "Vibelish.exe"));
         }
         catch
         {
@@ -88,7 +88,7 @@ static class Uninstaller
     {
         var localAppData = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "InputTranslate");
+            "Vibelish");
 
         KillOtherInstances();
 
@@ -137,7 +137,7 @@ static class Uninstaller
 
     static void KillOtherInstances()
     {
-        foreach (var process in Process.GetProcessesByName("InputTranslate"))
+        foreach (var process in Process.GetProcessesByName("Vibelish"))
         {
             if (process.Id == Environment.ProcessId)
                 continue;
@@ -189,7 +189,7 @@ static class Uninstaller
         {
             var startMenu = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.Programs),
-                "输入翻译");
+                "Vibelish");
             if (Directory.Exists(startMenu))
                 Directory.Delete(startMenu, true);
         }
@@ -202,7 +202,7 @@ static class Uninstaller
         {
             var desktop = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-                "输入翻译.lnk");
+                "Vibelish.lnk");
             if (File.Exists(desktop))
                 File.Delete(desktop);
         }
@@ -250,7 +250,7 @@ static class Uninstaller
         {
             using var runOnce = Registry.CurrentUser.CreateSubKey(RunOnceKeyPath, true);
             runOnce?.SetValue(
-                "InputTranslateCleanup",
+                "VibelishCleanup",
                 "cmd.exe /c rmdir /s /q \"" + directory + "\"",
                 RegistryValueKind.String);
         }

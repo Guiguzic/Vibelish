@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <summary>
 /// 译文出来后列出这句里值得记的词。三种样式：只有单词、单词 + 中文释义（默认）、

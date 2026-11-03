@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 sealed record WordSense(string Pos, string Chinese, bool Fits, string Note);
 
@@ -233,6 +233,22 @@ static class WordStudy
         return words;
     }
 
+    /// <summary>英译中时大模型给的「更地道的说法」。原句已经很好时是空字符串；没给这一项（JSON 坏了）是 null。</summary>
+    public static string? ParseBetter(string raw)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(ExtractJson(raw));
+            if (Prop(doc.RootElement, "better") is not { } value)
+                return null;
+            return value.ValueKind == JsonValueKind.String ? (value.GetString() ?? "").Trim() : "";
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
     public static SenseRewrite ParseRewrite(string raw)
     {
         try
@@ -411,8 +427,14 @@ sealed class EnglishLayout
         // 单独量一个空格会得到 18 像素这种离谱的值，单词也会多出几像素的悬垂。
         // 夹在两根竖线中间量，再减掉两根竖线，得到的才是真实的步进宽度。
         var bars = TextRenderer.MeasureText("||", font, new Size(int.MaxValue, int.MaxValue), flags).Width;
-        int MeasureWidth(string piece) =>
-            Math.Max(1, TextRenderer.MeasureText("|" + piece + "|", font, new Size(int.MaxValue, int.MaxValue), flags).Width - bars);
+        // 中文按字拆开以后同一个字会量很多次，记下来。
+        var widths = new Dictionary<string, int>(StringComparer.Ordinal);
+        int MeasureWidth(string piece)
+        {
+            if (!widths.TryGetValue(piece, out var width))
+                widths[piece] = width = Math.Max(1, TextRenderer.MeasureText("|" + piece + "|", font, new Size(int.MaxValue, int.MaxValue), flags).Width - bars);
+            return width;
+        }
         var lineHeight = Math.Max(
             font.Height,
             TextRenderer.MeasureText("Ag", font, new Size(int.MaxValue, int.MaxValue), flags).Height);
@@ -420,7 +442,7 @@ sealed class EnglishLayout
         var x = 0;
         var y = 0;
         var maxX = 0;
-        var pieces = WordStudy.Split(text);
+        var pieces = SplitCjk(WordStudy.Split(text));
         for (var p = 0; p < pieces.Count; p++)
         {
             var piece = pieces[p];
@@ -446,7 +468,8 @@ sealed class EnglishLayout
                     glue = MeasureWidth(next[..lead]);
             }
 
-            var attached = !piece.Word && pieceText.Length > 0 && !char.IsWhiteSpace(pieceText[0]) && p > 0 && pieces[p - 1].Word;
+            var attached = !piece.Word && pieceText.Length > 0 && !char.IsWhiteSpace(pieceText[0]) && p > 0
+                && (pieces[p - 1].Word || Closing.Contains(pieceText[0]));
             var wraps = !attached && x > 0 && x + width + glue > maxWidth;
             if (wraps && !piece.Word)
             {
@@ -471,6 +494,41 @@ sealed class EnglishLayout
 
         Width = maxX;
         Height = y + lineHeight;
+    }
+
+    /// <summary>行首不能出现的标点（中文的逗号、句号这些也算）。</summary>
+    const string Closing = "，。、；：！？）」』”’》〉】,.;:!?)";
+
+    /// <summary>中文没有空格：英译中的译文要按字拆开，才能在任意两个字之间换行。</summary>
+    static List<WordStudy.Piece> SplitCjk(List<WordStudy.Piece> pieces)
+    {
+        static bool Wide(char ch) => ch is >= (char)0x3000 and <= (char)0x9FFF or >= (char)0xF900 and <= (char)0xFAFF or >= (char)0xFF00 and <= (char)0xFFEF;
+
+        var list = new List<WordStudy.Piece>(pieces.Count);
+        foreach (var piece in pieces)
+        {
+            if (piece.Word || !piece.Text.Any(Wide))
+            {
+                list.Add(piece);
+                continue;
+            }
+
+            var start = 0;
+            for (var i = 0; i < piece.Text.Length; i++)
+            {
+                if (!Wide(piece.Text[i]))
+                    continue;
+                if (i > start)
+                    list.Add(new WordStudy.Piece(piece.Text[start..i], false));
+                list.Add(new WordStudy.Piece(piece.Text[i].ToString(), false));
+                start = i + 1;
+            }
+
+            if (start < piece.Text.Length)
+                list.Add(new WordStudy.Piece(piece.Text[start..], false));
+        }
+
+        return list;
     }
 
     public string? WordAt(Point point)

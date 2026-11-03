@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <summary>一个热键组合，例如 Ctrl+Alt+T。</summary>
 readonly record struct HotkeySpec(bool Ctrl, bool Alt, bool Shift, bool Win, Keys Key)
@@ -275,7 +275,7 @@ sealed class GlobalHotkey : IDisposable
         public HotkeyWindow(Action onHotkey)
         {
             _onHotkey = onHotkey;
-            CreateHandle(new CreateParams { Caption = "InputTranslate.Hotkey", Parent = MessageOnly });
+            CreateHandle(new CreateParams { Caption = "Vibelish.Hotkey", Parent = MessageOnly });
         }
 
         protected override void WndProc(ref Message m)

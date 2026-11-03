@@ -3,7 +3,7 @@ using System.Text;
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 sealed class FocusSnapshot
 {

@@ -1,7 +1,7 @@
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 // 这个文件同时编进安装程序（.NET Framework 4.8），不要用 Index/Range、Math.Clamp 之类的新 API。
 

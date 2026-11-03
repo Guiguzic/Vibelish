@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 sealed class AppConfig
 {
@@ -27,7 +27,10 @@ sealed class AppConfig
 
     /// <summary>输完停顿多久开始翻译。快 350 / 适中 600 / 稳 1000。</summary>
     public int PauseMs { get; set; } = 600;
-    public bool ChineseOnly { get; set; } = true;
+
+    /// <summary>翻译方向：auto（有中文就中译英，纯英文就英译中）、zh2en、en2zh。</summary>
+    public string Direction { get; set; } = "auto";
+
     public bool AutoCopy { get; set; }
     public bool AutoWrite { get; set; }
 
@@ -86,14 +89,33 @@ sealed class AppConfig
     public int AutoHideSeconds { get; set; }
 
     public static string Directory =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "InputTranslate");
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Vibelish");
 
     public static string FilePath => Path.Combine(Directory, "config.json");
+
+    /// <summary>1.2.0 以前叫「输入翻译」，设置在 %APPDATA%\InputTranslate。</summary>
+    static string LegacyFilePath =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "InputTranslate", "config.json");
 
     static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
     public static AppConfig Load()
     {
+        // 第一次以 Vibelish 启动：把旧版的设置（包括加密的 API Key）复制过来，旧文件留着不动。
+        try
+        {
+            if (!File.Exists(FilePath) && File.Exists(LegacyFilePath))
+            {
+                System.IO.Directory.CreateDirectory(Directory);
+                File.Copy(LegacyFilePath, FilePath);
+                TraceLog.Note("config migrated from InputTranslate");
+            }
+        }
+        catch (Exception ex)
+        {
+            TraceLog.Note("config migrate fail " + ex.GetType().Name);
+        }
+
         AppConfig config;
         try
         {
@@ -162,6 +184,7 @@ sealed class AppConfig
     public AppConfig Normalize()
     {
         Engine = Pick(Engine, "auto", "auto", "openai", "transmart", "mymemory", "google");
+        Direction = Pick(Direction, "auto", "auto", "zh2en", "en2zh");
         EnglishLevel = Pick(EnglishLevel, "kaoyan", "kaoyan", "cet6", "plain");
         Theme = Pick(Theme, "system", "system", "dark", "light");
         CardTextSize = Pick(CardTextSize, "normal", "small", "normal", "large");
@@ -209,6 +232,33 @@ sealed class AppConfig
         _ => "考研",
     };
 
+    /// <summary>这段文字该翻成中文（英译中）还是英文（中译英）。</summary>
+    public bool ToChinese(string text) => Direction == "en2zh" || (Direction == "auto" && !Lang.HasCjk(text));
+
+    /// <summary>这段文字够不够翻：中译英要有中文，英译中要有英文单词。</summary>
+    public bool Translatable(string text)
+    {
+        var trimmed = text.Trim();
+        if (trimmed.Length < 2)
+            return false;
+        return ToChinese(trimmed) ? Lang.HasEnglish(trimmed) : Lang.HasCjk(trimmed);
+    }
+
+    /// <summary>输入框里的内容值不值得读：方向允许的语言出现了才算。</summary>
+    public bool Readable(string text) => Direction switch
+    {
+        "zh2en" => Lang.HasCjk(text),
+        "en2zh" => Lang.HasEnglish(text),
+        _ => Lang.HasCjk(text) || Lang.HasEnglish(text),
+    };
+
+    public string DirectionLabel => Direction switch
+    {
+        "zh2en" => "中→英",
+        "en2zh" => "英→中",
+        _ => "中英互译",
+    };
+
     public AppConfig Clone() => (AppConfig)MemberwiseClone();
 
     static string Pick(string? value, string fallback, params string[] allowed)
@@ -218,6 +268,7 @@ sealed class AppConfig
     }
 
     // DPAPI：密钥只有当前 Windows 用户能解开，拷走 config.json 也读不到。
+    // 用的还是改名前的盐，不然旧版存的密钥就解不开了。
     static readonly byte[] Entropy = Encoding.UTF8.GetBytes("InputTranslate.OpenAiApiKey");
 
     static string Protect(string plain)
@@ -274,7 +325,7 @@ sealed class AppConfig
             try
             {
                 var ok = protect
-                    ? CryptProtectData(ref input, "InputTranslate", ref salt, IntPtr.Zero, IntPtr.Zero, UiForbidden, out var output)
+                    ? CryptProtectData(ref input, "Vibelish", ref salt, IntPtr.Zero, IntPtr.Zero, UiForbidden, out var output)
                     : CryptUnprotectData(ref input, IntPtr.Zero, ref salt, IntPtr.Zero, IntPtr.Zero, UiForbidden, out output);
                 if (!ok)
                     throw new InvalidOperationException("DPAPI " + Marshal.GetLastWin32Error());

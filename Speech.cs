@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Speech.Synthesis;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <summary>用 Windows 自带的英文语音朗读译文和单词。没装英文语音时给出提示，不报错。</summary>
 static class Speech

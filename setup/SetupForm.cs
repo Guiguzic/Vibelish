@@ -1,9 +1,9 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Text.RegularExpressions;
-using InputTranslate;
+using Vibelish;
 
-namespace InputTranslateSetup;
+namespace VibelishSetup;
 
 sealed class SetupForm : Form
 {
@@ -41,7 +41,7 @@ sealed class SetupForm : Form
 
     public SetupForm()
     {
-        Text = "输入翻译 安装程序";
+        Text = "Vibelish 安装程序";
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         MinimizeBox = true;
@@ -52,7 +52,7 @@ sealed class SetupForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(600, 480);
 
-        using (var iconStream = typeof(SetupForm).Assembly.GetManifestResourceStream("InputTranslateSetup.app.ico"))
+        using (var iconStream = typeof(SetupForm).Assembly.GetManifestResourceStream("VibelishSetup.app.ico"))
         {
             if (iconStream != null)
                 Icon = new Icon(iconStream);
@@ -61,7 +61,7 @@ sealed class SetupForm : Form
         // 更新时沿用原来的开机启动和桌面快捷方式选择。
         _startup = Check("开机自动启动（推荐）", IsUpdate ? InstallerCore.StartupEnabled : true);
         _desktop = Check("在桌面创建快捷方式", IsUpdate && InstallerCore.DesktopShortcutExists);
-        _launch = Check("现在启动输入翻译", true);
+        _launch = Check("现在启动 Vibelish", true);
 
         _options = BuildOptions();
         _done = BuildDone();
@@ -152,7 +152,7 @@ sealed class SetupForm : Form
         header.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         header.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        using (var stream = typeof(SetupForm).Assembly.GetManifestResourceStream("InputTranslateSetup.app.ico"))
+        using (var stream = typeof(SetupForm).Assembly.GetManifestResourceStream("VibelishSetup.app.ico"))
         {
             if (stream != null)
             {
@@ -172,7 +172,7 @@ sealed class SetupForm : Form
 
         header.Controls.Add(new Label
         {
-            Text = IsUpdate ? "更新 输入翻译" : "安装 输入翻译",
+            Text = IsUpdate ? "更新 Vibelish" : "安装 Vibelish",
             AutoSize = true,
             Font = Theme.Ui(15F, FontStyle.Bold),
             ForeColor = Color.FromArgb(243, 246, 250),
@@ -181,7 +181,7 @@ sealed class SetupForm : Form
         }, 1, 0);
         header.Controls.Add(new Label
         {
-            Text = "版本 " + InstallerCore.ProductVersion + " · 中文输入，按考研难度翻成英文",
+            Text = "版本 " + InstallerCore.ProductVersion + " · 写 prompt 的时候，顺手学英语",
             AutoSize = true,
             Font = Theme.Ui(8.5F),
             ForeColor = Color.FromArgb(148, 163, 184),
@@ -203,8 +203,8 @@ sealed class SetupForm : Form
             intro = "已经安装了 " + _installed + "，将重新安装同一版本。设置和 API Key 都会保留。";
         else
             intro = "已安装 " + _installed + "，将更新到 " + InstallerCore.ProductVersion + "。设置和 API Key 都会保留。";
-        if (Process.GetProcessesByName("InputTranslate").Length > 0)
-            intro += "\n输入翻译正在运行，安装时会先把它关掉。";
+        if (Process.GetProcessesByName("Vibelish").Length > 0)
+            intro += "\nVibelish 正在运行，安装时会先把它关掉。";
         stack.Controls.Add(Wrapped(intro, Body, new Padding(2, 0, 0, 12)));
 
         var location = NewCard("安装位置");
@@ -218,7 +218,7 @@ sealed class SetupForm : Form
         };
         _wrapped.Add(path);
         location.Add(path);
-        location.Add(Wrapped("开始菜单里会添加「输入翻译」和「卸载输入翻译」。\n以后也可以在 Windows 设置 → 应用 里卸载。", Hint, new Padding(0, 2, 0, 0)));
+        location.Add(Wrapped("开始菜单里会添加「Vibelish」和「卸载 Vibelish」。\n以后也可以在 Windows 设置 → 应用 里卸载。", Hint, new Padding(0, 2, 0, 0)));
         stack.Controls.Add(location);
 
         var choices = NewCard("选项");
@@ -263,9 +263,9 @@ sealed class SetupForm : Form
         var hotkey = ConfiguredHotkey();
         var usage = NewCard("怎么用");
         usage.Add(Step(1, "在任意输入框里按 " + hotkey + " 开始。"));
-        usage.Add(Step(2, "照常输入中文，停顿一下，卡片上就出现英文。"));
+        usage.Add(Step(2, "照常打字：写中文，卡片上出现英文；直接写英文，卡片上出现中文意思。"));
         usage.Add(Step(3, "按 Enter 完成（Shift+Enter 换行），按 Esc 取消。点英文里的单词可以查词、换说法。"));
-        usage.Add(Wrapped("右键托盘图标可以打开设置。\n配置大模型接口（DeepSeek、通义千问、Kimi 等）后，译文会更地道。", Hint, new Padding(0, 6, 0, 0)));
+        usage.Add(Wrapped("右键托盘图标可以打开设置、切换翻译方向。\n配置大模型接口（DeepSeek、通义千问、Kimi 等）后，译文更地道，写英文时还会给出更地道的说法。", Hint, new Padding(0, 6, 0, 0)));
         stack.Controls.Add(usage);
 
         _launch.Margin = new Padding(2, 0, 0, 0);
@@ -369,7 +369,7 @@ sealed class SetupForm : Form
             _progress.Showing = false;
             _status.ForeColor = Bad;
             _status.Text = "安装没有完成";
-            _error.Text = "出错了：" + ex.Message + "\n可以关掉正在运行的输入翻译后点「重试」。";
+            _error.Text = "出错了：" + ex.Message + "\n可以关掉正在运行的 Vibelish 后点「重试」。";
             _error.Visible = true;
             FitLayout();
             _install.Text = "重试";
@@ -390,7 +390,7 @@ sealed class SetupForm : Form
         {
             _status.ForeColor = Bad;
             _status.Text = "安装没有完成";
-            _error.Text = "出错了：对路径“InputTranslate.exe”的访问被拒绝。\n可以关掉正在运行的输入翻译后点「重试」。";
+            _error.Text = "出错了：对路径“Vibelish.exe”的访问被拒绝。\n可以关掉正在运行的 Vibelish 后点「重试」。";
             _error.Visible = true;
             _install.Text = "重试";
             FitLayout();
@@ -408,8 +408,8 @@ sealed class SetupForm : Form
     {
         _doneTitle.Text = IsUpdate ? "已更新到 " + InstallerCore.ProductVersion : "安装完成";
         _doneSubtitle.Text = _startup.Checked
-            ? "输入翻译会在托盘常驻，开机自动启动。"
-            : "输入翻译会在托盘常驻；需要时从开始菜单打开。";
+            ? "Vibelish 会在托盘常驻，开机自动启动。"
+            : "Vibelish 会在托盘常驻；需要时从开始菜单打开。";
 
         _options.Visible = false;
         _done.Visible = true;
@@ -452,7 +452,11 @@ sealed class SetupForm : Form
     {
         try
         {
-            var file = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "InputTranslate", "config.json");
+            // 从旧版「输入翻译」更新时，新版第一次启动才会把设置搬过来。
+            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            var file = Path.Combine(appData, "Vibelish", "config.json");
+            if (!File.Exists(file))
+                file = Path.Combine(appData, "InputTranslate", "config.json");
             if (File.Exists(file))
             {
                 var match = Regex.Match(File.ReadAllText(file), "\"Hotkey\"\\s*:\\s*\"([^\"]+)\"");

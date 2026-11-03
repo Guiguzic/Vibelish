@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <summary>
 /// 设置窗口：左边侧栏分页，右边是一组一组的选项。改了就生效，不用点保存。
@@ -20,6 +20,7 @@ sealed class SettingsForm : Form
         ("Ollama（本机）", "http://localhost:11434/v1", "qwen2.5:7b"),
     ];
 
+    static readonly string[] DirectionKeys = ["auto", "zh2en", "en2zh"];
     static readonly string[] EngineKeys = ["auto", "openai", "transmart", "mymemory", "google"];
     static readonly string[] LevelKeys = ["kaoyan", "cet6", "plain"];
     static readonly string[] ThemeKeys = ["system", "light", "dark"];
@@ -30,12 +31,12 @@ sealed class SettingsForm : Form
     static readonly string[] StyleKeys = ["word", "meaning", "detail"];
     static readonly string[] SpeedKeys = ["slow", "normal", "fast"];
 
-    readonly AppConfig _original;
+    AppConfig _original;
     readonly System.Windows.Forms.Timer _debounce = new() { Interval = 450 };
     readonly Panel _sidebar = new();
     readonly Panel _content = new();
     readonly NavList _nav = new();
-    readonly TextLabel _appName = new() { SingleLine = true, Text = "输入翻译" };
+    readonly TextLabel _appName = new() { SingleLine = true, Text = "Vibelish" };
     readonly TextLabel _appVersion = new() { SingleLine = true };
     readonly PictureBox _appIcon = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Transparent };
     readonly List<SettingsPage> _pages = new();
@@ -48,12 +49,13 @@ sealed class SettingsForm : Form
     SettingsRow? _enabledRow;
 
     // 翻译
+    readonly SegmentedControl _direction = new("自动", "中译英", "英译中");
     readonly PopupButton _engine = new("自动", "只用大模型", "腾讯交互翻译", "MyMemory", "Google");
     readonly SegmentedControl _level = new("考研", "六级", "日常");
     readonly SegmentedControl _pause = new("快", "适中", "稳");
-    readonly ToggleSwitch _chineseOnly = new();
     readonly ToggleSwitch _autoCopy = new();
     readonly ToggleSwitch _autoWrite = new();
+    SettingsRow? _directionRow;
     SettingsRow? _engineRow;
     SettingsRow? _levelRow;
 
@@ -95,7 +97,7 @@ sealed class SettingsForm : Form
     {
         _original = config;
         _hotkey = new TextField(_hotkeyBox);
-        Text = "输入翻译 设置";
+        Text = "Vibelish 设置";
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         MinimizeBox = true;
@@ -105,7 +107,7 @@ sealed class SettingsForm : Form
         Font = Theme.Ui(9F);
         KeyPreview = true;
         DoubleBuffered = true;
-        using (var stream = typeof(SettingsForm).Assembly.GetManifestResourceStream("InputTranslate.app.ico"))
+        using (var stream = typeof(SettingsForm).Assembly.GetManifestResourceStream("Vibelish.app.ico"))
         {
             if (stream != null)
             {
@@ -183,6 +185,17 @@ sealed class SettingsForm : Form
         Invalidate(true);
     }
 
+    /// <summary>托盘菜单里改了设置（翻译方向、启用热键）：窗口里的控件跟着变，但不再触发保存。</summary>
+    public void Reload(AppConfig config, string hotkeyStatus)
+    {
+        _debounce.Stop();
+        _original = config;
+        _loading = true;
+        LoadValues(config, hotkeyStatus);
+        _loading = false;
+        UpdateEnabled();
+    }
+
     /// <summary>托盘重新注册热键后，把结果告诉设置窗口。</summary>
     public void SetHotkeyStatus(string status)
     {
@@ -214,13 +227,13 @@ sealed class SettingsForm : Form
 
         var translate = AddPage(Glyphs.Globe, "翻译");
         var engine = translate.AddGroup("");
+        _directionRow = engine.AddRow("翻译方向", "", _direction);
         _engineRow = engine.AddRow("翻译引擎", "", _engine);
-        _levelRow = engine.AddRow("译文难度", "只对大模型生效。考研：高级词汇 + 复杂句式，像经济学人", _level);
+        _levelRow = engine.AddRow("英文难度", "只对大模型生效。中译英是译文的难度，英译中是「更地道的说法」的难度。考研：高级词汇 + 复杂句式，像经济学人", _level);
         engine.AddRow("开始翻译", "输完停顿多久开始翻译：快 0.35 秒 · 适中 0.6 秒 · 稳 1 秒。打出句号、逗号会立刻翻译", _pause);
         var after = translate.AddGroup("译完以后");
-        after.AddRow("只翻译含中文的内容", "", _chineseOnly);
-        after.AddRow("自动复制英文", "会覆盖剪贴板", _autoCopy);
-        after.AddRow("自动写入输入框", "只在整段就是输入框全部内容时写入", _autoWrite);
+        after.AddRow("自动复制译文", "会覆盖剪贴板", _autoCopy);
+        after.AddRow("自动写入输入框", "只在中译英、并且整段就是输入框全部内容时写入", _autoWrite);
 
         var model = AddPage(Glyphs.Bolt, "大模型");
         var api = model.AddGroup("OpenAI 兼容接口");
@@ -247,7 +260,7 @@ sealed class SettingsForm : Form
         look.AddRow("文字大小", "", _size);
         var layout = card.AddGroup("卡片");
         layout.AddRow("卡片位置", "", _position);
-        layout.AddRow("显示中文原文", "", _showSource);
+        layout.AddRow("显示原文", "你输入的那句，显示在译文上面", _showSource);
         layout.AddRow("显示操作提示", "「Enter 完成 · Esc 取消」这类小字", _showHints);
         layout.AddRow("显示译文来源", "模型名或翻译引擎", _showEngine);
         layout.AddRow("完成后自动收起", "按 Enter 完成以后", _autoHide);
@@ -267,7 +280,7 @@ sealed class SettingsForm : Form
         info.AddRow("版本", "", new TextLabel { Text = typeof(SettingsForm).Assembly.GetName().Version?.ToString(3) ?? "", SingleLine = true, AlignRight = true, Size = new Size(Theme.Scale(this, 120), Theme.Scale(this, 22)) });
         info.AddRow("配置文件夹", AppConfig.Directory, LinkButton("打开", () => OpenFolder(AppConfig.Directory)));
         info.AddRow("运行日志", "只记事件和长度，不记原文", LinkButton("查看", () => OpenFile(TraceLog.FilePath)));
-        about.AddNote("中文输入，按考研难度翻成英文。热键开始，Enter 完成，Esc 取消；点英文单词可以查释义。");
+        about.AddNote("Vibelish：写 prompt 的时候，顺手学英语。打中文翻成考研难度的英文；直接写英文，就给出中文意思和更地道的说法。热键开始，Enter 完成，Esc 取消；点英文单词可以查释义。");
     }
 
     SettingsPage AddPage(string glyph, string title)
@@ -294,10 +307,10 @@ sealed class SettingsForm : Form
 
     void LoadValues(AppConfig config, string hotkeyStatus)
     {
+        _direction.SelectedIndex = Math.Max(0, Array.IndexOf(DirectionKeys, config.Direction));
         _engine.SelectedIndex = Math.Max(0, Array.IndexOf(EngineKeys, config.Engine));
         _level.SelectedIndex = Math.Max(0, Array.IndexOf(LevelKeys, config.EnglishLevel));
         _pause.SelectedIndex = config.PauseMs <= 450 ? 0 : config.PauseMs <= 800 ? 1 : 2;
-        _chineseOnly.Checked = config.ChineseOnly;
         _autoCopy.Checked = config.AutoCopy;
         _autoWrite.Checked = config.AutoWrite;
         _baseUrl.Text = config.OpenAiBaseUrl;
@@ -332,11 +345,11 @@ sealed class SettingsForm : Form
     public AppConfig ReadConfig()
     {
         var next = _original.Clone();
+        next.Direction = DirectionKeys[_direction.SelectedIndex];
         next.Engine = EngineKeys[_engine.SelectedIndex];
         next.EnglishLevel = LevelKeys[_level.SelectedIndex];
         var originalPause = _original.PauseMs <= 450 ? 0 : _original.PauseMs <= 800 ? 1 : 2;
         next.PauseMs = _pause.SelectedIndex == originalPause ? _original.PauseMs : PauseValues[_pause.SelectedIndex];
-        next.ChineseOnly = _chineseOnly.Checked;
         next.AutoCopy = _autoCopy.Checked;
         next.AutoWrite = _autoWrite.Checked;
         next.OpenAiBaseUrl = _baseUrl.Text.Trim();
@@ -365,9 +378,9 @@ sealed class SettingsForm : Form
 
     void WireEvents()
     {
-        foreach (var toggle in new[] { _enabled, _startup, _chineseOnly, _autoCopy, _autoWrite, _stream, _fast, _showSource, _showHints, _showEngine, _study, _clickLookup, _showSpeak, _speakOnLookup })
+        foreach (var toggle in new[] { _enabled, _startup, _autoCopy, _autoWrite, _stream, _fast, _showSource, _showHints, _showEngine, _study, _clickLookup, _showSpeak, _speakOnLookup })
             toggle.CheckedChanged += (_, _) => Changed(immediate: true);
-        foreach (var segmented in new[] { _level, _pause, _theme, _size, _studyStyle, _speed })
+        foreach (var segmented in new[] { _direction, _level, _pause, _theme, _size, _studyStyle, _speed })
             segmented.SelectedIndexChanged += (_, _) => Changed(immediate: true);
         foreach (var popup in new[] { _engine, _position, _autoHide })
             popup.SelectedIndexChanged += (_, _) => Changed(immediate: true);
@@ -422,6 +435,16 @@ sealed class SettingsForm : Form
 
     void UpdateEngineHint()
     {
+        if (_directionRow != null)
+        {
+            _directionRow.Subtitle = DirectionKeys[_direction.SelectedIndex] switch
+            {
+                "zh2en" => "输入中文，翻成英文",
+                "en2zh" => "直接用英文写，卡片显示中文意思；配了大模型还会给出更地道的说法",
+                _ => "有中文就翻成英文；纯英文就翻成中文，配了大模型还会给出更地道的说法",
+            };
+        }
+
         if (_engineRow == null)
             return;
         var key = EngineKeys[_engine.SelectedIndex];

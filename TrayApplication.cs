@@ -1,7 +1,7 @@
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 sealed class TrayApplicationContext : ApplicationContext
 {
@@ -19,12 +19,13 @@ sealed class TrayApplicationContext : ApplicationContext
     readonly ImeCapture _ime;
     readonly GlobalHotkey _hotkey;
     readonly FieldWatcher _watcher;
-    readonly EventWaitHandle _showEvent = new(false, EventResetMode.AutoReset, @"Local\InputTranslate.Show");
+    readonly EventWaitHandle _showEvent = new(false, EventResetMode.AutoReset, @"Local\Vibelish.Show");
     readonly ManualResetEvent _stopping = new(false);
     readonly Thread _showThread;
-    readonly List<(string Chinese, string English)> _recent = new();
+    readonly List<(string Source, string Result, bool ToChinese, string? Better)> _recent = new();
     readonly ToolStripMenuItem _toggleItem;
     readonly ToolStripMenuItem _recentItem;
+    readonly ToolStripMenuItem _directionItem;
     readonly ToolStripMenuItem _hotkeyItem;
     readonly ToolStripMenuItem _startupItem;
     AppConfig _config;
@@ -38,6 +39,11 @@ sealed class TrayApplicationContext : ApplicationContext
     FocusSnapshot? _fieldSnapshot;
     string _sentence = "";
     long _textChangedAt = Environment.TickCount64;
+
+    // 开始听写时输入框里已经有的英文（终端里的占位提示、以前写的草稿）不翻，改过以后才翻。
+    string _baseline = "";
+    bool _baselineOpen;
+    long _sessionStartedAt;
 
     // 翻译状态。_translatedFor 是已经请求过（或已翻好）的那句，避免重复请求；
     // 失败后按 3 秒、6 秒……最多 30 秒退避，不会每 60 毫秒重试一次把接口打爆。
@@ -69,7 +75,7 @@ sealed class TrayApplicationContext : ApplicationContext
         _watcher = new FieldWatcher(Environment.ProcessId);
         _hotkey = new GlobalHotkey(Dispatch);
         (_appIcon, _listeningIcon) = LoadIcons();
-        _showThread = new Thread(ShowLoop) { IsBackground = true, Name = "InputTranslate.ShowEvent" };
+        _showThread = new Thread(ShowLoop) { IsBackground = true, Name = "Vibelish.ShowEvent" };
         _showThread.Start();
 
         var menu = ThemedMenu.Create();
@@ -79,6 +85,13 @@ sealed class TrayApplicationContext : ApplicationContext
             Font = Theme.Ui(9F, FontStyle.Bold),
         };
         _recentItem = new ToolStripMenuItem("最近翻译");
+        _directionItem = new ToolStripMenuItem("翻译方向");
+        foreach (var (key, label) in new[] { ("auto", "自动（有中文就中译英，纯英文就英译中）"), ("zh2en", "中译英"), ("en2zh", "英译中") })
+        {
+            var direction = key;
+            _directionItem.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => BeginOnUi(() => SetDirection(direction))) { Tag = key });
+        }
+
         _hotkeyItem = new ToolStripMenuItem("启用热键") { CheckOnClick = true, Checked = _config.Enabled };
         _hotkeyItem.Click += (_, _) => SetHotkeyEnabled(_hotkeyItem.Checked);
         _startupItem = new ToolStripMenuItem("开机自动启动") { CheckOnClick = true, Checked = StartupRegistration.IsEnabled };
@@ -87,6 +100,7 @@ sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(new ToolStripMenuItem("显示卡片", null, (_, _) => BeginOnUi(() => ShowCard(toggle: false))));
         menu.Items.Add(_recentItem);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(_directionItem);
         menu.Items.Add(new ToolStripMenuItem("设置…", null, (_, _) => BeginOnUi(OpenSettings)));
         menu.Items.Add(_hotkeyItem);
         menu.Items.Add(_startupItem);
@@ -102,7 +116,7 @@ sealed class TrayApplicationContext : ApplicationContext
         {
             Icon = _appIcon,
             Visible = true,
-            Text = "输入翻译",
+            Text = "Vibelish",
             ContextMenuStrip = menu,
         };
         _icon.MouseClick += (_, e) =>
@@ -116,9 +130,9 @@ sealed class TrayApplicationContext : ApplicationContext
                 BeginOnUi(ToggleSession);
         };
 
-        _overlay.CopyRequested += (_, _) => CopyEnglish();
-        _overlay.WriteRequested += (_, _) => WriteEnglish();
-        _overlay.SpeakRequested += (_, _) => Speak(_overlay.EnglishText);
+        _overlay.CopyRequested += (_, _) => CopyResult();
+        _overlay.WriteRequested += (_, _) => WriteResult();
+        _overlay.SpeakRequested += (_, _) => Speak(_overlay.SpeakText);
         _overlay.SpeakWordRequested += word => Speak(word);
         _overlay.WordClicked += OnWordClicked;
         _overlay.RewriteRequested += (_, _) => _ = RewriteWordAsync();
@@ -136,7 +150,7 @@ sealed class TrayApplicationContext : ApplicationContext
         _idleTimer.Tick += (_, _) =>
         {
             _idleTimer.Stop();
-            if (_capturing || _overlay.EnglishText.Length > 0)
+            if (_capturing || _overlay.ResultText.Length > 0)
                 return;
             // 鼠标还停在卡片上就再等一会儿。
             if (_overlay.Visible && _overlay.Bounds.Contains(Cursor.Position))
@@ -215,7 +229,7 @@ sealed class TrayApplicationContext : ApplicationContext
     /// <summary>又双击了一次 exe：听写中只把卡片调出来，不清掉内容。</summary>
     void OnSecondLaunch()
     {
-        if (_capturing || _overlay.EnglishText.Length > 0)
+        if (_capturing || _overlay.ResultText.Length > 0)
         {
             _overlay.Show();
             return;
@@ -224,15 +238,23 @@ sealed class TrayApplicationContext : ApplicationContext
         ShowIdle(true);
     }
 
+    /// <summary>提示里说「输入中文」还是「输入英文」。</summary>
+    string InputLanguage => _config.Direction switch
+    {
+        "zh2en" => "中文",
+        "en2zh" => "英文",
+        _ => "中文或英文",
+    };
+
     string IdleHint() => _hotkey.HotkeyRegistered
-        ? "按 " + _hotkey.HotkeyText + " 开始，输入中文，按 Enter 完成"
+        ? "按 " + _hotkey.HotkeyText + " 开始，输入" + InputLanguage + "，按 Enter 完成"
         : _config.Enabled
             ? "热键被占用，请右键托盘图标选「开始翻译」，或在设置里换一个热键"
             : "热键已关闭，请右键托盘图标选「开始翻译」";
 
     void ShowIdle(bool pinTop)
     {
-        _overlay.ShowIdle("输入翻译", IdleHint(), pinTop ? OverlayForm.CardPlace.TopCenter : OverlayForm.CardPlace.Stay);
+        _overlay.ShowIdle("Vibelish", IdleHint(), pinTop ? OverlayForm.CardPlace.TopCenter : OverlayForm.CardPlace.Stay);
         _idleTimer.Stop();
         _idleTimer.Start();
     }
@@ -251,7 +273,7 @@ sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        if (_overlay.EnglishText.Length > 0)
+        if (_overlay.ResultText.Length > 0)
         {
             _overlay.Show();
             return;
@@ -284,8 +306,23 @@ sealed class TrayApplicationContext : ApplicationContext
 
         var now = Environment.TickCount64;
         var field = ReadField();
-        var imeText = committed + (HasCjk(composition) ? composition : "");
-        var shown = TerminalReader.RedactSecrets(HasCjk(field) ? field : imeText);
+        var imeText = committed + (Lang.HasCjk(composition) ? composition : "");
+        var shown = TerminalReader.RedactSecrets(_config.Readable(field) ? field : imeText);
+        if (_baselineOpen)
+        {
+            if (shown.Length > 0)
+            {
+                _baseline = shown;
+                _baselineOpen = false;
+            }
+            else if (now - _sessionStartedAt > 1500)
+            {
+                _baselineOpen = false;
+            }
+        }
+
+        if (_baseline.Length > 0 && string.Equals(shown, _baseline, StringComparison.Ordinal) && _config.ToChinese(shown))
+            shown = "";
 
         // 输入框偶尔读空一下，别马上把卡片清掉。
         if (shown.Length == 0 && _sentence.Length > 0 && now - _fieldSeen < 2000)
@@ -297,7 +334,7 @@ sealed class TrayApplicationContext : ApplicationContext
             _textChangedAt = now;
             if (_translating && !string.Equals(shown, _translatedFor, StringComparison.Ordinal))
                 CancelTranslation();
-            _overlay.UpdateSource(shown, _fieldBounds);
+            _overlay.UpdateSource(shown, _fieldBounds, shown.Length > 0 && _config.ToChinese(shown));
         }
 
         var due = now - _textChangedAt >= _config.PauseMs || EndsClause(shown);
@@ -328,7 +365,7 @@ sealed class TrayApplicationContext : ApplicationContext
         if (text.Length == 0 && snapshot.NeedsOcr && now - _watcher.OcrAt < 1500)
             text = FieldSentence(_watcher.OcrText);
 
-        if (HasCjk(text))
+        if (_config.Readable(text))
         {
             _fieldText = text;
             _fieldBounds = snapshot.Bounds;
@@ -386,9 +423,12 @@ sealed class TrayApplicationContext : ApplicationContext
         _fieldSeen = 0;
         _nextFieldRead = 0;
         _textChangedAt = Environment.TickCount64;
+        _sessionStartedAt = _textChangedAt;
+        _baseline = "";
+        _baselineOpen = true;
         _idleTimer.Stop();
         _hideTimer.Stop();
-        _overlay.BeginListening(EngineBadge(), "请开始输入中文…  Esc 取消");
+        _overlay.BeginListening(Badge(null), "请开始输入" + InputLanguage + "…  Esc 取消");
         UpdateTrayState();
         // 趁用户还在打字，先把到翻译服务的连接建好，第一句就不用等握手。
         _translator.WarmUp();
@@ -437,7 +477,7 @@ sealed class TrayApplicationContext : ApplicationContext
             _ = TranslateAsync(_sentence);
         }
 
-        if (!_translating && !HasCjk(_sentence) && _overlay.EnglishText.Length == 0)
+        if (!_translating && !ShouldTranslate(_sentence) && _overlay.ResultText.Length == 0)
         {
             _overlay.Hide();
             return;
@@ -447,15 +487,21 @@ sealed class TrayApplicationContext : ApplicationContext
         ScheduleAutoHide();
     }
 
-    string EngineBadge() => _config.UsesChatForTranslation
-        ? _config.LevelLabel
-        : _config.Engine switch
-        {
-            "google" => "Google",
-            "mymemory" => "MyMemory",
-            "transmart" => "腾讯交互翻译",
-            _ => "免费引擎",
-        };
+    /// <summary>卡片标题后面的小字：翻译方向 · 难度（没用大模型时是引擎名）。还不知道方向时传 null。</summary>
+    string Badge(bool? toChinese)
+    {
+        var direction = toChinese is { } chinese ? (chinese ? "英→中" : "中→英") : _config.DirectionLabel;
+        var engine = _config.UsesChatForTranslation
+            ? _config.LevelLabel
+            : _config.Engine switch
+            {
+                "google" => "Google",
+                "mymemory" => "MyMemory",
+                "transmart" => "腾讯交互翻译",
+                _ => "免费引擎",
+            };
+        return direction + " · " + engine;
+    }
 
     void RetryTranslation()
     {
@@ -496,6 +542,8 @@ sealed class TrayApplicationContext : ApplicationContext
         var token = source.Token;
         _translating = true;
         _translatedFor = sentence;
+        var toChinese = _config.ToChinese(sentence);
+        _overlay.SetBadge(Badge(toChinese));
         _overlay.SetTranslating(true);
         // 逐字输出：后台线程收到一段就排到 UI 线程，过期的（已经换了一句）直接丢掉。
         Action<string>? partial = null;
@@ -504,7 +552,7 @@ sealed class TrayApplicationContext : ApplicationContext
             partial = text => Dispatch(() =>
             {
                 if (!token.IsCancellationRequested && generation == _translateGeneration && _translating)
-                    _overlay.ShowPartial(sentence, text);
+                    _overlay.ShowPartial(sentence, text, toChinese);
             });
         }
 
@@ -529,13 +577,13 @@ sealed class TrayApplicationContext : ApplicationContext
             _doneChinese = sentence;
             TraceLog.Note("translate ok " + TraceLog.Safe(result.Detail) + " chars=" + result.Text.Length
                 + " first=" + result.FirstMs + "ms total=" + result.TotalMs + "ms");
-            _overlay.ShowTranslation(sentence, result.Text, result.Detail);
-            AddRecent(sentence, result.Text);
-            ApplyTranslation(result.Text);
+            _overlay.ShowTranslation(sentence, result.Text, result.Detail, result.ToChinese, result.Better);
+            AddRecent(sentence, result.Text, result.ToChinese, result.Better);
+            ApplyTranslation(result.ToChinese);
             if (result.Words is { Count: > 0 } words)
                 _overlay.ShowStudy(words); // 和译文同一次请求带回来的，不用再等。
             else if (_config.StudyWords && _config.HasChatApi)
-                _ = StartStudyAsync(sentence, result.Text);
+                _ = StartStudyAsync(result.ToChinese ? _overlay.LookupSentence : result.Text, result.ToChinese ? result.Text : sentence);
         }
         catch (OperationCanceledException)
         {
@@ -564,17 +612,18 @@ sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    async Task StartStudyAsync(string source, string english)
+    async Task StartStudyAsync(string english, string chinese)
     {
         _study?.Cancel();
         var cts = new CancellationTokenSource();
         _study = cts;
         var token = cts.Token;
+        var shown = _overlay.ResultText;
         _overlay.BeginStudy();
         try
         {
-            var words = await _translator.StudyAsync(english, source, token);
-            if (token.IsCancellationRequested || !string.Equals(_overlay.EnglishText, english, StringComparison.Ordinal))
+            var words = await _translator.StudyAsync(english, chinese, token);
+            if (token.IsCancellationRequested || !string.Equals(_overlay.ResultText, shown, StringComparison.Ordinal))
                 return;
             if (words.Count == 0)
             {
@@ -626,7 +675,7 @@ sealed class TrayApplicationContext : ApplicationContext
         var cts = new CancellationTokenSource();
         _lookup = cts;
         var token = cts.Token;
-        var sentence = _overlay.EnglishText;
+        var sentence = _overlay.LookupSentence;
         _overlay.BeginWordLookup(word);
         if (_config.SpeakOnLookup && Speech.Available)
             Speech.Speak(word, _config.SpeakSpeed);
@@ -660,7 +709,7 @@ sealed class TrayApplicationContext : ApplicationContext
     {
         var sense = _overlay.SelectedSense;
         var word = _overlay.GlossWord;
-        var sentence = _overlay.EnglishText;
+        var sentence = _overlay.LookupSentence;
         if (sense == null || word.Length == 0 || sentence.Length == 0)
             return;
 
@@ -700,9 +749,17 @@ sealed class TrayApplicationContext : ApplicationContext
             return;
         _lookup?.Cancel();
         _senseRewrite?.Cancel();
+        if (_overlay.ToChinese)
+        {
+            // 英译中：换掉的是「更地道的说法」，中文意思不变。
+            _overlay.AdoptBetter(text);
+            _overlay.SetStatus("已换成这句，可以朗读或替换到输入框", OverlayForm.StatusKind.Success);
+            return;
+        }
+
         var chinese = _overlay.SourceText;
         _overlay.ShowTranslation(chinese, text, "按义项改写");
-        AddRecent(chinese, text);
+        AddRecent(chinese, text, false, null);
         _overlay.SetStatus("已换成这句，可以复制或写入", OverlayForm.StatusKind.Success);
     }
 
@@ -714,16 +771,17 @@ sealed class TrayApplicationContext : ApplicationContext
             _overlay.SetStatus(Speech.MissingHint, OverlayForm.StatusKind.Error);
     }
 
-    void CopyEnglish()
+    void CopyResult()
     {
-        var ok = CopyToClipboard(_overlay.EnglishText);
-        _overlay.SetStatus(ok ? "已复制英文" : "复制失败，剪贴板被别的程序占用，请再点一次",
+        var ok = CopyToClipboard(_overlay.ResultText);
+        _overlay.SetStatus(ok ? (_overlay.ToChinese ? "已复制中文" : "已复制英文") : "复制失败，剪贴板被别的程序占用，请再点一次",
             ok ? OverlayForm.StatusKind.Success : OverlayForm.StatusKind.Error);
     }
 
-    void WriteEnglish()
+    /// <summary>中译英写译文；英译中写更地道的英文，替换掉自己写的那句。</summary>
+    void WriteResult()
     {
-        var english = _overlay.EnglishText;
+        var english = _overlay.WriteText;
         if (english.Length == 0)
             return;
 
@@ -738,19 +796,21 @@ sealed class TrayApplicationContext : ApplicationContext
             copied ? OverlayForm.StatusKind.Info : OverlayForm.StatusKind.Error);
     }
 
-    void ApplyTranslation(string english)
+    void ApplyTranslation(bool toChinese)
     {
-        if (english.Length == 0)
+        var text = _overlay.ResultText;
+        if (text.Length == 0)
             return;
 
-        if (_config.AutoWrite && FocusReader.TryWrite(FreshField(), english, out var message))
+        // 英译中不自动写入：中文写进输入框没用，悄悄换掉自己写的英文也太突然。
+        if (_config.AutoWrite && !toChinese && FocusReader.TryWrite(FreshField(), text, out var message))
         {
             _overlay.SetStatus(message, OverlayForm.StatusKind.Success);
             return;
         }
 
         if (_config.AutoCopy)
-            CopyEnglish();
+            CopyResult();
     }
 
     FocusSnapshot? FreshField()
@@ -786,12 +846,12 @@ sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    void AddRecent(string chinese, string english)
+    void AddRecent(string source, string result, bool toChinese, string? better)
     {
-        if (english.Length == 0)
+        if (result.Length == 0)
             return;
-        _recent.RemoveAll(item => string.Equals(item.English, english, StringComparison.Ordinal));
-        _recent.Insert(0, (chinese, english));
+        _recent.RemoveAll(item => string.Equals(item.Result, result, StringComparison.Ordinal));
+        _recent.Insert(0, (source, result, toChinese, better));
         if (_recent.Count > RecentLimit)
             _recent.RemoveRange(RecentLimit, _recent.Count - RecentLimit);
     }
@@ -800,14 +860,25 @@ sealed class TrayApplicationContext : ApplicationContext
     {
         if (index < 0 || index >= _recent.Count)
             return;
-        var (chinese, english) = _recent[index];
+        var (source, result, toChinese, better) = _recent[index];
         if (_capturing)
             EndSession(cancel: true);
         _overlay.ShowIdle("最近翻译", "", OverlayForm.CardPlace.TopCenter);
-        _overlay.ShowTranslation(chinese, english, "");
+        _overlay.ShowTranslation(source, result, "", toChinese, better);
         _overlay.FinishSession();
-        CopyEnglish();
+        CopyResult();
         ScheduleAutoHide();
+    }
+
+    /// <summary>托盘菜单里换翻译方向：和在设置里改一样，立刻生效并保存。</summary>
+    void SetDirection(string direction)
+    {
+        if (_config.Direction == direction)
+            return;
+        var next = _config.Clone();
+        next.Direction = direction;
+        ApplySettings(next.Normalize(), StartupRegistration.IsEnabled);
+        _settings?.Reload(_config, HotkeyStatus());
     }
 
     /// <summary>托盘菜单跟着主题和强调色走。</summary>
@@ -839,6 +910,9 @@ sealed class TrayApplicationContext : ApplicationContext
         _hotkeyItem.Checked = _config.Enabled;
         _hotkeyItem.Text = _config.Enabled && _hotkey.HotkeyRegistered ? "启用热键（" + _hotkey.HotkeyText + "）" : "启用热键";
         _startupItem.Checked = StartupRegistration.IsEnabled;
+        foreach (ToolStripMenuItem item in _directionItem.DropDownItems)
+            item.Checked = Equals(item.Tag, _config.Direction);
+        _directionItem.Text = "翻译方向（" + _config.DirectionLabel + "）";
 
         _recentItem.DropDownItems.Clear();
         _recentItem.DropDown.Font = Theme.Ui(9F);
@@ -851,10 +925,14 @@ sealed class TrayApplicationContext : ApplicationContext
         for (var i = 0; i < _recent.Count; i++)
         {
             var index = i;
-            var (chinese, english) = _recent[i];
-            var item = new ToolStripMenuItem(Shorten(chinese, 14) + "   →   " + Shorten(english, 34), null, (_, _) => BeginOnUi(() => ShowRecent(index)))
+            var (source, result, toChinese, _) = _recent[i];
+            // 英文占地方，英译中时原文多留几个字。
+            var label = toChinese
+                ? Shorten(source, 30) + "   →   " + Shorten(result, 18)
+                : Shorten(source, 14) + "   →   " + Shorten(result, 34);
+            var item = new ToolStripMenuItem(label, null, (_, _) => BeginOnUi(() => ShowRecent(index)))
             {
-                ToolTipText = english,
+                ToolTipText = result,
                 Padding = new Padding(0, 3, 0, 3),
             };
             _recentItem.DropDownItems.Add(item);
@@ -918,7 +996,7 @@ sealed class TrayApplicationContext : ApplicationContext
         var lookChanged = next.Theme != _config.Theme || next.Accent != _config.Accent || next.CardTextSize != _config.CardTextSize;
         _config = next;
         if (!_config.TrySave(out var error))
-            _icon.ShowBalloonTip(5000, "输入翻译", "设置没能保存：" + error, ToolTipIcon.Warning);
+            _icon.ShowBalloonTip(5000, "Vibelish", "设置没能保存：" + error, ToolTipIcon.Warning);
         _translator.UpdateConfig(_config);
         _translatedFor = "";
         _doneChinese = "";
@@ -933,12 +1011,14 @@ sealed class TrayApplicationContext : ApplicationContext
 
         if (_config.AutoHideSeconds <= 0)
             _hideTimer.Stop();
+        if (_capturing)
+            _overlay.SetBadge(Badge(null));
         RegisterHotkey(announce: hotkeyChanged);
         if (hotkeyChanged)
             _settings?.SetHotkeyStatus(HotkeyStatus());
         ApplyStartup(startup);
         UpdateTrayState();
-        TraceLog.Note("settings saved engine=" + _config.Engine + " level=" + _config.EnglishLevel + " chat=" + _config.HasChatApi);
+        TraceLog.Note("settings saved engine=" + _config.Engine + " level=" + _config.EnglishLevel + " dir=" + _config.Direction + " chat=" + _config.HasChatApi);
     }
 
     void RegisterHotkey(bool announce)
@@ -962,9 +1042,9 @@ sealed class TrayApplicationContext : ApplicationContext
         if (!_config.Enabled)
             return;
         if (!_hotkey.HotkeyRegistered)
-            _icon.ShowBalloonTip(5000, "输入翻译", _hotkey.Error + "。请在设置里换一个热键，或右键托盘图标开始。", ToolTipIcon.Warning);
+            _icon.ShowBalloonTip(5000, "Vibelish", _hotkey.Error + "。请在设置里换一个热键，或右键托盘图标开始。", ToolTipIcon.Warning);
         else if (_hotkey.UsingFallback)
-            _icon.ShowBalloonTip(5000, "输入翻译", _hotkey.Preferred + " 被其他程序占用，已改用 " + _hotkey.HotkeyText + "。", ToolTipIcon.Info);
+            _icon.ShowBalloonTip(5000, "Vibelish", _hotkey.Preferred + " 被其他程序占用，已改用 " + _hotkey.HotkeyText + "。", ToolTipIcon.Info);
     }
 
     void SetHotkeyEnabled(bool enabled)
@@ -972,13 +1052,15 @@ sealed class TrayApplicationContext : ApplicationContext
         _config.Enabled = enabled;
         _ = _config.TrySave(out _);
         RegisterHotkey(announce: enabled);
+        // 设置窗口开着的话也要同步，不然它下次保存会把这个开关改回去。
+        _settings?.Reload(_config, HotkeyStatus());
     }
 
     void ToggleStartup(bool enabled)
     {
         if (!StartupRegistration.SetEnabled(enabled, out var error))
         {
-            MessageBox.Show("设置开机自动启动失败：" + error, "输入翻译", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show("设置开机自动启动失败：" + error, "Vibelish", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             _startupItem.Checked = StartupRegistration.IsEnabled;
             return;
         }
@@ -1003,36 +1085,15 @@ sealed class TrayApplicationContext : ApplicationContext
     {
         _icon.Icon = _capturing ? _listeningIcon : _appIcon;
         _icon.Text = _capturing
-            ? "输入翻译 · 正在听写（Enter 完成，Esc 取消）"
+            ? "Vibelish · 正在听写（Enter 完成，Esc 取消）"
             : !_config.Enabled
-                ? "输入翻译 · 热键已关闭"
+                ? "Vibelish · 热键已关闭"
                 : _hotkey.HotkeyRegistered
-                    ? "输入翻译 · " + _hotkey.HotkeyText + " 开始"
-                    : "输入翻译 · 热键不可用";
+                    ? "Vibelish · " + _hotkey.HotkeyText + " 开始"
+                    : "Vibelish · 热键不可用";
     }
 
-    bool ShouldTranslate(string text)
-    {
-        var trimmed = text.Trim();
-        if (trimmed.Length < 2)
-            return false;
-        return !_config.ChineseOnly || HasCjk(trimmed);
-    }
-
-    static bool HasCjk(string text)
-    {
-        foreach (var ch in text)
-        {
-            if (ch is >= (char)0x4E00 and <= (char)0x9FFF)
-                return true;
-            if (ch is >= (char)0x3400 and <= (char)0x4DBF)
-                return true;
-            if (ch is >= (char)0xF900 and <= (char)0xFAFF)
-                return true;
-        }
-
-        return false;
-    }
+    bool ShouldTranslate(string text) => _config.Translatable(text);
 
     static bool EndsClause(string text)
     {
@@ -1072,7 +1133,7 @@ sealed class TrayApplicationContext : ApplicationContext
         Icon normal;
         try
         {
-            using var stream = typeof(TrayApplicationContext).Assembly.GetManifestResourceStream("InputTranslate.app.ico");
+            using var stream = typeof(TrayApplicationContext).Assembly.GetManifestResourceStream("Vibelish.app.ico");
             normal = stream != null ? new Icon(stream, size) : DrawFallbackIcon(size);
         }
         catch

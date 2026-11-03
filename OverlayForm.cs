@@ -1,7 +1,7 @@
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <summary>
 /// 输入框上方的翻译卡片。不抢焦点，可以拖动；拖过之后本次听写里不再自动挪位置。
@@ -39,6 +39,8 @@ sealed class OverlayForm : Form
     readonly TextLabel _hint = new() { SingleLine = true, AlignRight = true };
     readonly TextLabel _source = new();
     readonly ClickableEnglish _english = new();
+    readonly TextLabel _betterCaption = new() { SingleLine = true };
+    readonly ClickableEnglish _better = new();
     readonly TextLabel _error = new();
     readonly StudyStrip _study = new();
     readonly WordGlossPanel _gloss = new();
@@ -51,12 +53,13 @@ sealed class OverlayForm : Form
     readonly RoundButton _close = new();
     readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 2600 };
     readonly System.Windows.Forms.Timer _pulseTimer = new() { Interval = 90 };
+    readonly ToolTip _tips = new() { ShowAlways = true, InitialDelay = 400 };
 
     CardState _state = CardState.Idle;
-    string _idleTitle = "输入翻译";
+    string _idleTitle = "Vibelish";
     string _idleHint = "";
     string _level = "";
-    string _englishShown = "";
+    string _resultShown = "";
     string _translatedSource = "";
     string _detail = "";
     string _errorText = "";
@@ -74,6 +77,11 @@ sealed class OverlayForm : Form
     bool _placedBelow;
     string _glossWord = "";
     bool _glossOpen;
+
+    // 英译中：译文是中文，下面再放一句更地道的英文。null 表示没有评价（免费引擎），空字符串表示原句已经很地道。
+    bool _toChinese;
+    bool _sourceLatin;
+    string? _betterText;
     bool _studyOpen;
     bool _dwmCorners;
     int _footerTop = -1;
@@ -90,7 +98,7 @@ sealed class OverlayForm : Form
     {
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
-        Text = "输入翻译";
+        Text = "Vibelish";
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.None;
@@ -98,6 +106,8 @@ sealed class OverlayForm : Form
 
         _english.SuppressClick = () => _drag;
         _english.WordClicked += word => WordClicked?.Invoke(word);
+        _better.SuppressClick = () => _drag;
+        _better.WordClicked += word => WordClicked?.Invoke(word);
         _study.WordClicked += word => WordClicked?.Invoke(word);
         _gloss.CloseClicked += (_, _) => CloseGloss();
         _gloss.RewriteClicked += (_, _) => RewriteRequested?.Invoke(this, EventArgs.Empty);
@@ -129,11 +139,10 @@ sealed class OverlayForm : Form
             _speak.Text = "朗读";
         }
 
-        var tips = new ToolTip { ShowAlways = true, InitialDelay = 400 };
-        tips.SetToolTip(_settings, "设置");
-        tips.SetToolTip(_close, "关闭（听写中会结束本次）");
-        tips.SetToolTip(_write, "用英文替换输入框里的内容");
-        tips.SetToolTip(_speak, "朗读英文");
+        _tips.SetToolTip(_settings, "设置");
+        _tips.SetToolTip(_close, "关闭（听写中会结束本次）");
+        _tips.SetToolTip(_write, "用英文替换输入框里的内容");
+        _tips.SetToolTip(_speak, "朗读英文");
 
         _copy.Click += (_, _) => CopyRequested?.Invoke(this, EventArgs.Empty);
         _write.Click += (_, _) => WriteRequested?.Invoke(this, EventArgs.Empty);
@@ -159,18 +168,34 @@ sealed class OverlayForm : Form
 
         Controls.AddRange(new Control[]
         {
-            _header, _hint, _source, _english, _error, _study, _gloss, _meta,
+            _header, _hint, _source, _english, _betterCaption, _better, _error, _study, _gloss, _meta,
             _write, _copy, _speak, _retry, _settings, _close,
         });
-        foreach (var control in new Control[] { this, _header, _hint, _source, _english, _error, _meta })
+        foreach (var control in new Control[] { this, _header, _hint, _source, _english, _betterCaption, _better, _error, _meta })
             AttachDrag(control);
         ApplyTheme();
     }
 
     public string SourceText { get; private set; } = "";
 
-    /// <summary>当前有效的英文译文。正在更新（旧译文变灰）或还在逐字输出时为空，复制 / 写入都不可用。</summary>
-    public string EnglishText => _stale || _streaming ? "" : _englishShown;
+    /// <summary>当前有效的译文（中译英是英文，英译中是中文）。正在更新（旧译文变灰）或还在逐字输出时为空，复制 / 写入都不可用。</summary>
+    public string ResultText => _stale || _streaming ? "" : _resultShown;
+
+    /// <summary>当前显示的是英译中（译文是中文）。</summary>
+    public bool ToChinese => _toChinese;
+
+    /// <summary>查词、按义项改写时用的英文句子：中译英是译文；英译中是更地道的说法，没有就用原文。</summary>
+    public string LookupSentence => !_toChinese ? ResultText
+        : ResultText.Length == 0 ? ""
+        : _betterText is { Length: > 0 } better ? better : SourceText;
+
+    /// <summary>「写入输入框」写的英文：中译英是译文；英译中是更地道的说法，没有就不能写。</summary>
+    public string WriteText => ResultText.Length == 0 ? "" : _toChinese ? _betterText ?? "" : ResultText;
+
+    /// <summary>朗读按钮读的英文。</summary>
+    public string SpeakText => LookupSentence;
+
+    bool BetterVisible => _toChinese && _betterText != null && ResultText.Length > 0;
 
     /// <summary>鼠标停在卡片上（自动收起时要等一等）。</summary>
     public bool PointerOver => Visible && Bounds.Contains(Cursor.Position);
@@ -235,8 +260,8 @@ sealed class OverlayForm : Form
         var p = Theme.Current;
         BackColor = p.Card;
         _english.BackColor = p.Card;
-        _english.Font = Theme.CardEnglish(15F);
-        _source.Font = Theme.Card(10F);
+        _better.BackColor = p.Card;
+        ApplyFonts();
         _error.Font = Theme.Card(9F);
         _hint.Font = Theme.Card(8.25F);
         _meta.Font = Theme.Card(8.25F);
@@ -255,6 +280,26 @@ sealed class OverlayForm : Form
         if (IsHandleCreated)
             Relayout();
         Invalidate(true);
+    }
+
+    /// <summary>英文用 Segoe，中文用雅黑：原文和译文的字体跟着翻译方向换。</summary>
+    void ApplyFonts()
+    {
+        _english.Font = _toChinese ? Theme.Card(14F) : Theme.CardEnglish(15F);
+        _source.Font = _sourceLatin ? Theme.CardLatin(10.5F) : Theme.Card(10F);
+        _better.Font = Theme.CardEnglish(12.5F);
+        _betterCaption.Font = Theme.Card(8.25F);
+    }
+
+    /// <summary>换了翻译方向：字体和「写入」按钮跟着变。</summary>
+    void SetDirection(bool toChinese)
+    {
+        if (_toChinese == toChinese)
+            return;
+        _toChinese = toChinese;
+        ApplyFonts();
+        _write.Text = toChinese ? "用地道说法替换" : "写入输入框";
+        _tips.SetToolTip(_write, toChinese ? "用更地道的说法替换输入框里的英文" : "用英文替换输入框里的内容");
     }
 
     /// <summary>卡片上显示哪些东西、放在哪里。</summary>
@@ -278,8 +323,11 @@ sealed class OverlayForm : Form
         _idleTitle = title;
         _idleHint = hint;
         SourceText = "";
-        _englishShown = "";
+        _resultShown = "";
         _translatedSource = "";
+        _betterText = null;
+        _sourceLatin = false;
+        ApplyFonts();
         _stale = false;
         _streaming = false;
         _detail = "";
@@ -298,8 +346,11 @@ sealed class OverlayForm : Form
         _level = level;
         _idleHint = hint;
         SourceText = "";
-        _englishShown = "";
+        _resultShown = "";
         _translatedSource = "";
+        _betterText = null;
+        _sourceLatin = false;
+        ApplyFonts();
         _stale = false;
         _streaming = false;
         _detail = "";
@@ -312,13 +363,30 @@ sealed class OverlayForm : Form
         Present(CardPlace.Cursor, Rectangle.Empty);
     }
 
-    /// <summary>输入框里的中文变了。旧译文先变灰留着，避免卡片忽大忽小。</summary>
-    public void UpdateSource(string chinese, Rectangle anchor)
+    /// <summary>标题后面的小字：翻译方向 · 难度。</summary>
+    public void SetBadge(string level)
     {
-        if (SourceText == chinese)
+        if (_level == level)
             return;
-        SourceText = chinese;
-        var stale = _englishShown.Length > 0 && !string.Equals(chinese, _translatedSource, StringComparison.Ordinal);
+        _level = level;
+        if (Visible)
+            Relayout();
+    }
+
+    /// <summary>输入框里的内容变了。旧译文先变灰留着，避免卡片忽大忽小。</summary>
+    /// <param name="latin">原文是英文（英译中），用英文字体显示。</param>
+    public void UpdateSource(string source, Rectangle anchor, bool latin = false)
+    {
+        if (SourceText == source)
+            return;
+        SourceText = source;
+        if (_sourceLatin != latin)
+        {
+            _sourceLatin = latin;
+            ApplyFonts();
+        }
+
+        var stale = _resultShown.Length > 0 && !string.Equals(source, _translatedSource, StringComparison.Ordinal);
         if (stale != _stale)
         {
             _stale = stale;
@@ -330,7 +398,7 @@ sealed class OverlayForm : Form
         }
 
         _errorText = "";
-        Present(chinese.Length == 0 ? CardPlace.Stay : CardPlace.AboveInput, anchor);
+        Present(source.Length == 0 ? CardPlace.Stay : CardPlace.AboveInput, anchor);
     }
 
     public void SetTranslating(bool translating)
@@ -346,13 +414,17 @@ sealed class OverlayForm : Form
     }
 
     /// <summary>流式输出：译文一段一段到，先显示出来，结束后再调 <see cref="ShowTranslation"/>。</summary>
-    public void ShowPartial(string chinese, string english)
+    public void ShowPartial(string source, string text, bool toChinese = false)
     {
-        if (english.Length == 0)
+        if (text.Length == 0)
             return;
-        SourceText = chinese;
-        _translatedSource = chinese;
-        _englishShown = english;
+        SourceText = source;
+        _translatedSource = source;
+        _resultShown = text;
+        _betterText = null;
+        _sourceLatin = toChinese;
+        SetDirection(toChinese);
+        ApplyFonts();
         _stale = false;
         _streaming = true;
         _errorText = "";
@@ -362,11 +434,17 @@ sealed class OverlayForm : Form
         Present(CardPlace.Stay, Rectangle.Empty);
     }
 
-    public void ShowTranslation(string chinese, string english, string detail)
+    /// <param name="toChinese">英译中：<paramref name="text"/> 是中文。</param>
+    /// <param name="better">英译中时更地道的英文；空字符串表示原句已经很地道，null 表示没有评价。</param>
+    public void ShowTranslation(string source, string text, string detail, bool toChinese = false, string? better = null)
     {
-        SourceText = chinese;
-        _translatedSource = chinese;
-        _englishShown = english;
+        SourceText = source;
+        _translatedSource = source;
+        _resultShown = text;
+        _betterText = toChinese ? better : null;
+        _sourceLatin = toChinese;
+        SetDirection(toChinese);
+        ApplyFonts();
         _stale = false;
         _streaming = false;
         _detail = detail;
@@ -377,6 +455,16 @@ sealed class OverlayForm : Form
         HideStudy();
         UpdateTimers();
         Present(CardPlace.Stay, Rectangle.Empty);
+    }
+
+    /// <summary>英译中时在释义里「采用这句」：换掉更地道的说法。</summary>
+    public void AdoptBetter(string english)
+    {
+        if (!_toChinese || english.Trim().Length == 0)
+            return;
+        _betterText = english.Trim();
+        HideGloss();
+        Relayout();
     }
 
     public void ShowTranslationError(string message)
@@ -446,7 +534,7 @@ sealed class OverlayForm : Form
     {
         _glossWord = word;
         _glossOpen = true;
-        _english.Marked = word;
+        _english.Marked = _better.Marked = word;
         _gloss.ShowLoading(word);
         Relayout();
     }
@@ -455,7 +543,7 @@ sealed class OverlayForm : Form
     {
         _glossWord = gloss.Word;
         _glossOpen = true;
-        _english.Marked = gloss.Word;
+        _english.Marked = _better.Marked = gloss.Word;
         _gloss.Show(gloss);
         Relayout();
     }
@@ -577,7 +665,7 @@ sealed class OverlayForm : Form
     {
         _glossWord = "";
         _glossOpen = false;
-        _english.Marked = "";
+        _english.Marked = _better.Marked = "";
         _gloss.Clear();
     }
 
@@ -602,7 +690,7 @@ sealed class OverlayForm : Form
         else if (_state == CardState.Listening)
             _header.Set("听写中", p.Success, false, _level);
         else if (_state == CardState.Done)
-            _header.Set(_englishShown.Length > 0 ? "已完成" : "已结束", p.Dim, false, _level);
+            _header.Set(_resultShown.Length > 0 ? "已完成" : "已结束", p.Dim, false, _level);
         else
             _header.Set(_idleTitle, p.Accent, false, "");
     }
@@ -621,15 +709,22 @@ sealed class OverlayForm : Form
             ? _statusKind == StatusKind.Success ? p.Success : p.Muted
             : p.Dim;
 
-        var english = EnglishText.Length > 0;
-        _english.English = _englishShown;
+        var hasResult = ResultText.Length > 0;
+        _english.English = _resultShown;
         _english.ForeColor = _stale ? p.Dim : p.Text;
-        _english.Loading = _englishShown.Length == 0 && _translating;
-        _english.LookupEnabled = english && _clickLookup && HasLatinWord(_englishShown);
-        _copy.Enabled = english;
-        _write.Enabled = english;
-        _speak.Enabled = english;
+        _english.Loading = _resultShown.Length == 0 && _translating;
+        _english.LookupEnabled = hasResult && _clickLookup && !_toChinese && HasLatinWord(_resultShown);
+        _better.English = _betterText ?? "";
+        _better.ForeColor = p.Text;
+        _better.LookupEnabled = BetterVisible && _clickLookup && HasLatinWord(_betterText ?? "");
+        _betterCaption.ForeColor = _betterText is { Length: 0 } ? p.Success : p.Dim;
+        _copy.Enabled = hasResult;
+        _write.Enabled = WriteText.Length > 0;
+        _speak.Enabled = SpeakText.Length > 0;
     }
+
+    /// <summary>卡片上有可以点的英文单词。</summary>
+    bool CanLookup => _english.LookupEnabled || _better.LookupEnabled;
 
     void Relayout()
     {
@@ -659,17 +754,17 @@ sealed class OverlayForm : Form
     {
         if (!_showHints)
             return "";
-        var hasEnglish = EnglishText.Length > 0;
+        var hasEnglish = ResultText.Length > 0;
         if (_state == CardState.Listening)
         {
             if (SourceText.Length == 0)
                 return "Esc 取消";
-            return hasEnglish && _english.LookupEnabled && !_glossOpen
+            return hasEnglish && CanLookup && !_glossOpen
                 ? "点词查义 · Enter 完成 · Esc 取消"
                 : "Enter 完成 · Shift+Enter 换行 · Esc 取消";
         }
 
-        if (_state == CardState.Done && hasEnglish && _english.LookupEnabled && !_glossOpen)
+        if (_state == CardState.Done && hasEnglish && CanLookup && !_glossOpen)
             return "点单词查释义";
         return "";
     }
@@ -684,16 +779,21 @@ sealed class OverlayForm : Form
 
         var padX = Sc(18);
         var icon = Sc(26);
-        var hasEnglish = EnglishText.Length > 0;
+        var hasEnglish = ResultText.Length > 0;
         var sourceText = SourceText.Length > 0 ? (_showSource ? SourceText : "") : _idleHint;
         var showSource = sourceText.Length > 0;
-        var showEnglish = _englishShown.Length > 0 || _english.Loading;
+        var showEnglish = _resultShown.Length > 0 || _english.Loading;
         var showError = _errorText.Length > 0;
         var showStudy = _studyOpen && hasEnglish;
         var showGloss = _glossOpen && hasEnglish;
-        var showFooter = _englishShown.Length > 0;
+        var showFooter = _resultShown.Length > 0;
+        var showBetter = BetterVisible;
+        var showBetterText = showBetter && _betterText!.Length > 0;
         var hint = HintText();
 
+        _betterCaption.Text = showBetterText ? "更地道的说法" : "这句英文已经很地道，不用改";
+        _betterCaption.Visible = showBetter;
+        _better.Visible = showBetterText;
         _source.Text = sourceText;
         _error.Text = _errorText;
         _hint.Text = hint;
@@ -704,8 +804,9 @@ sealed class OverlayForm : Form
         _study.Visible = showStudy;
         _gloss.Visible = showGloss;
         _copy.Visible = showFooter;
-        _write.Visible = showFooter;
-        _speak.Visible = showFooter && _showSpeak;
+        _write.Visible = showFooter && (!_toChinese || WriteText.Length > 0);
+        _copy.Variant = _write.Visible ? ButtonVariant.Secondary : ButtonVariant.Primary;
+        _speak.Visible = showFooter && _showSpeak && (!_toChinese || SpeakText.Length > 0);
         var meta = _status.Length > 0 ? _status : _showEngine && !_stale && !_streaming ? _detail : "";
         _meta.Text = meta;
         _meta.Visible = showFooter && meta.Length > 0;
@@ -716,6 +817,8 @@ sealed class OverlayForm : Form
             width = Math.Max(width, Measure(sourceText, _source.Font, measureWidth).Width + padX * 2 + Sc(4));
         if (showEnglish)
             width = Math.Max(width, _english.Measure(measureWidth).Width + padX * 2 + Sc(6));
+        if (showBetterText)
+            width = Math.Max(width, _better.Measure(measureWidth).Width + padX * 2 + Sc(6));
         if (showError)
             width = Math.Max(width, Measure(_errorText, _error.Font, measureWidth).Width + padX * 2 + _retry.PreferredWidth(Sc(8)) + Sc(8));
         if (showGloss)
@@ -746,6 +849,21 @@ sealed class OverlayForm : Form
             var height = Math.Max(size.Height, _english.Font.Height + 2);
             _english.SetBounds(padX, y, inner, height);
             y += height;
+        }
+
+        // 英译中：中文意思下面是更地道的英文，可以点词查义、朗读、一键替换。
+        if (showBetter)
+        {
+            y += Sc(12);
+            y = Place(_betterCaption, padX, y, inner);
+            if (showBetterText)
+            {
+                y += Sc(3);
+                var size = _better.Measure(inner);
+                var height = Math.Max(size.Height, _better.Font.Height + 2);
+                _better.SetBounds(padX, y, inner, height);
+                y += height;
+            }
         }
 
         if (showError)
@@ -786,10 +904,15 @@ sealed class OverlayForm : Form
             _footerTop = y;
             y += Sc(12);
             var buttonHeight = Sc(30);
-            var writeWidth = _write.PreferredWidth(Sc(14));
             var copyWidth = _copy.PreferredWidth(Sc(14));
-            _write.SetBounds(padX, y, writeWidth, buttonHeight);
-            _copy.SetBounds(_write.Right + Sc(8), y, copyWidth, buttonHeight);
+            var left = padX;
+            if (_write.Visible)
+            {
+                _write.SetBounds(left, y, _write.PreferredWidth(Sc(14)), buttonHeight);
+                left = _write.Right + Sc(8);
+            }
+
+            _copy.SetBounds(left, y, copyWidth, buttonHeight);
             var right = _copy.Right;
             if (_speak.Visible)
             {
@@ -799,8 +922,8 @@ sealed class OverlayForm : Form
 
             if (_meta.Visible)
             {
-                var left = right + Sc(12);
-                _meta.SetBounds(left, y, Math.Max(0, padX + inner - left), buttonHeight);
+                var metaLeft = right + Sc(12);
+                _meta.SetBounds(metaLeft, y, Math.Max(0, padX + inner - metaLeft), buttonHeight);
                 _meta.Visible = _meta.Width > Sc(40);
             }
 
@@ -990,6 +1113,7 @@ sealed class OverlayForm : Form
         {
             _statusTimer.Dispose();
             _pulseTimer.Dispose();
+            _tips.Dispose();
         }
 
         base.Dispose(disposing);

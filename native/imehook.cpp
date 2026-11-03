@@ -4,7 +4,7 @@
 #include <msctf.h>
 #include <wchar.h>
 
-// Shared with InputTranslate. Offsets are part of the contract.
+// Shared with Vibelish. Offsets are part of the contract.
 // 0 lock is unused; a named mutex guards the block.
 // 4  LONG active
 // 8  LONG reset
@@ -51,14 +51,14 @@ static WPARAM g_lastWParam = 0;
 
 static SharedState* State() {
     if (g_state) return g_state;
-    g_map = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 8192, L"Local\\InputTranslate.Ime.v1");
+    g_map = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 8192, L"Local\\Vibelish.Ime.v1");
     if (!g_map) return NULL;
     g_state = (SharedState*)MapViewOfFile(g_map, FILE_MAP_ALL_ACCESS, 0, 0, 8192);
     return g_state;
 }
 
 static HANDLE Mutex() {
-    if (!g_mutex) g_mutex = CreateMutexW(NULL, FALSE, L"Local\\InputTranslate.Ime.Lock");
+    if (!g_mutex) g_mutex = CreateMutexW(NULL, FALSE, L"Local\\Vibelish.Ime.Lock");
     return g_mutex;
 }
 

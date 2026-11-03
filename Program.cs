@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 static class Program
 {
@@ -78,7 +78,7 @@ static class Program
         Application.EnableVisualStyles();
         using var form = new Form
         {
-            Text = "InputTranslate hook test",
+            Text = "Vibelish hook test",
             StartPosition = FormStartPosition.CenterScreen,
             ClientSize = new Size(360, 120),
             TopMost = true,
@@ -103,13 +103,13 @@ static class Program
         form.BeginListening("考研", "请开始输入中文…");
         form.UpdateSource("政策已经落实了。", Rectangle.Empty);
         form.ShowTranslation("政策已经落实了。", "The policy was implemented.", "test");
-        if (form.EnglishText != "The policy was implemented.")
+        if (form.ResultText != "The policy was implemented.")
             return "english";
         form.UpdateSource("政策已经落实了吗？", Rectangle.Empty);
-        if (form.EnglishText.Length != 0)
+        if (form.ResultText.Length != 0)
             return "stale english should not be copyable";
         form.UpdateSource("政策已经落实了。", Rectangle.Empty);
-        if (form.EnglishText != "The policy was implemented.")
+        if (form.ResultText != "The policy was implemented.")
             return "english restored";
         var before = form.Height;
         form.BeginWordLookup("implemented");
@@ -143,27 +143,76 @@ static class Program
             return "close " + openHeight + " -> " + form.Height;
         form.ShowTranslationError("接口超时");
         form.FinishSession();
-        if (form.EnglishText != "The policy was implemented.")
+        if (form.ResultText != "The policy was implemented.")
             return "finish keeps english";
 
         // 逐字输出时还不能复制，结束后才行。
         form.BeginListening("考研", "");
         form.SetTranslating(true);
         form.ShowPartial("政策已经落实了。", "The policy");
-        if (form.EnglishText.Length != 0)
+        if (form.ResultText.Length != 0)
             return "streaming english should not be copyable";
         form.ShowTranslation("政策已经落实了。", "The policy was implemented.", "test");
         form.SetTranslating(false);
-        if (form.EnglishText != "The policy was implemented.")
+        if (form.ResultText != "The policy was implemented.")
             return "english after stream";
 
         if (Translator.VisiblePart("<think>a</think>Policy is <<<WO") != "Policy is")
             return "visible part marker prefix";
         if (Translator.VisiblePart("<think>still thinking") != "")
             return "visible part open think";
-        var (english, words) = Translator.SplitWords("It was implemented.\n<<< WORDS >>>\n{\"words\":[{\"en\":\"implement\",\"zh\":\"实施\",\"why\":\"正式\"}]}");
-        if (english != "It was implemented." || words.Count != 1 || words[0].English != "implement" || words[0].Chinese != "实施")
+        var (english, words, noBetter) = Translator.SplitWords("It was implemented.\n<<< WORDS >>>\n{\"words\":[{\"en\":\"implement\",\"zh\":\"实施\",\"why\":\"正式\"}]}");
+        if (english != "It was implemented." || words.Count != 1 || words[0].English != "implement" || words[0].Chinese != "实施" || noBetter != null)
             return "split words " + english + " / " + words.Count;
+        var (chinese, _, better) = Translator.SplitWords("我昨天去了图书馆。\n<<<WORDS>>>\n{\"better\":\"I went to the library yesterday.\",\"words\":[]}");
+        if (chinese != "我昨天去了图书馆。" || better != "I went to the library yesterday.")
+            return "split better " + chinese + " / " + better;
+        if (Translator.SplitWords("很好。\n<<<WORDS>>>\n{\"better\":\"\"}").Better != "")
+            return "split better empty";
+
+        // 翻译方向：自动时有中文就中译英，纯英文就英译中；太短的、只有数字的不翻。
+        var auto = new AppConfig().Normalize();
+        if (auto.ToChinese("帮我 fix 这个 bug") || !auto.ToChinese("fix the login bug"))
+            return "auto direction";
+        if (!auto.Translatable("fix the bug") || auto.Translatable("ok") || auto.Translatable("v2 12") || !auto.Translatable("你好"))
+            return "translatable";
+        var zh = new AppConfig { Direction = "zh2en" }.Normalize();
+        if (zh.Translatable("fix the bug") || zh.Readable("fix the bug"))
+            return "zh2en ignores english";
+        var en = new AppConfig { Direction = "en2zh" }.Normalize();
+        if (!en.ToChinese("帮我 fix 这个 bug") || en.Readable("你好"))
+            return "en2zh";
+        if (!Lang.SameSentence("I went there.", "i went there") || Lang.SameSentence("I went there.", "I go there."))
+            return "same sentence";
+
+        // 英译中：译文是中文，查词、朗读、写入用的是更地道的英文。
+        form.BeginListening("英→中", "");
+        form.UpdateSource("I go to library yesterday.", Rectangle.Empty, latin: true);
+        form.ShowTranslation("I go to library yesterday.", "我昨天去了图书馆。", "test", toChinese: true, better: "I went to the library yesterday.");
+        if (!form.ToChinese || form.ResultText != "我昨天去了图书馆。")
+            return "reverse result";
+        if (form.WriteText != "I went to the library yesterday." || form.LookupSentence != "I went to the library yesterday.")
+            return "reverse better";
+        form.ShowTranslation("I went to the library yesterday.", "我昨天去了图书馆。", "test", toChinese: true, better: "");
+        if (form.WriteText.Length != 0 || form.LookupSentence != "I went to the library yesterday.")
+            return "reverse already good";
+        form.AdoptBetter("Yesterday I went to the library.");
+        if (form.WriteText != "Yesterday I went to the library.")
+            return "adopt better";
+        form.ShowTranslation("政策已经落实了。", "The policy was implemented.", "test");
+        if (form.ToChinese || form.WriteText != "The policy was implemented.")
+            return "back to english";
+
+        // 中文译文要能在字与字之间换行，不能一整句挤在一行里。
+        using (var cjk = new Font("Microsoft YaHei UI", 14F))
+        {
+            var layout = new EnglishLayout();
+            layout.Build("虽然准备考研很辛苦，但我相信坚持下去一定会有收获，所以每天都去图书馆复习英语。", cjk, 200);
+            if (layout.Width > 200 || layout.Height < cjk.Height * 2)
+                return "cjk wrap " + layout.Width + "x" + layout.Height;
+            if (layout.Runs.Any(run => run.Bounds.Left == 0 && run.Text is "，" or "。" && run.Bounds.Top > 0))
+                return "cjk punctuation at line start";
+        }
 
         if (!HotkeySpec.TryParse("ctrl+alt+t", out var spec) || spec.ToString() != "Ctrl+Alt+T")
             return "hotkey parse";
@@ -226,26 +275,48 @@ static class Program
         switch (what)
         {
             case "idle":
-                card.ShowIdle("输入翻译", "按 Ctrl+Alt+T 开始，输入中文，按 Enter 完成", OverlayForm.CardPlace.TopCenter);
+                card.ShowIdle("Vibelish", "按 Ctrl+Alt+T 开始，输入中文或英文，按 Enter 完成", OverlayForm.CardPlace.TopCenter);
+                break;
+            case "reverse":
+            case "reverse-good":
+                // 英译中：自己写的英文 → 中文意思 + 更地道的说法。
+                var good = what == "reverse-good";
+                var mine = good ? "Could you help me refactor this function so that it is easier to test?" : "help me fix this bug, the login page always crash when user click the button";
+                card.BeginListening("英→中 · 考研", "请开始输入中文或英文…  Esc 取消");
+                card.UpdateSource(mine, Rectangle.Empty, latin: true);
+                card.ShowTranslation(
+                    mine,
+                    good ? "你能帮我重构一下这个函数，让它更容易测试吗？" : "帮我修复这个 bug：用户点击按钮时，登录页面总是崩溃。",
+                    "deepseek-chat · 英译中",
+                    toChinese: true,
+                    better: good ? "" : "Please help me fix this bug: the login page invariably crashes whenever a user clicks the button.");
+                card.ShowStudy(good
+                    ? new[] { new StudyWord("refactor", "重构", "编程常用词") }
+                    : new[]
+                    {
+                        new StudyWord("invariably", "总是；一贯", "比 always 更书面"),
+                        new StudyWord("crashes", "崩溃", "第三人称单数要加 -es"),
+                        new StudyWord("whenever", "每当", "替代 when，强调每次"),
+                    });
                 break;
             case "listening":
-                card.BeginListening("考研", "请开始输入中文…  Esc 取消");
+                card.BeginListening("中→英 · 考研", "请开始输入中文或英文…  Esc 取消");
                 card.UpdateSource("我今天想去图书馆复习英语", Rectangle.Empty);
                 card.SetTranslating(true);
                 break;
             case "stream":
-                card.BeginListening("考研", "请开始输入中文…  Esc 取消");
+                card.BeginListening("中→英 · 考研", "请开始输入中文或英文…  Esc 取消");
                 card.UpdateSource("虽然准备考研很辛苦，但我相信坚持下去一定会有收获。", Rectangle.Empty);
                 card.SetTranslating(true);
                 card.ShowPartial("虽然准备考研很辛苦，但我相信坚持下去一定会有收获。", "Arduous as preparation for the postgraduate entrance examination may be, I remain");
                 break;
             case "error":
-                card.BeginListening("考研", "请开始输入中文…  Esc 取消");
+                card.BeginListening("中→英 · 考研", "请开始输入中文或英文…  Esc 取消");
                 card.UpdateSource("我今天想去图书馆复习英语", Rectangle.Empty);
                 card.ShowTranslationError("接口返回 401（密钥不对或没有权限）：Incorrect API key provided");
                 break;
             default:
-                card.BeginListening("考研", "请开始输入中文…  Esc 取消");
+                card.BeginListening("中→英 · 考研", "请开始输入中文或英文…  Esc 取消");
                 card.ShowTranslation(
                     "虽然准备考研很辛苦，但我相信坚持下去一定会有收获。",
                     "Arduous as preparation for the postgraduate entrance examination may be, I remain convinced that perseverance will ultimately yield its rewards.",
@@ -369,7 +440,7 @@ static class Program
         {
             _ = AttachConsole(AttachParentProcess);
             Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-            var probePath = Path.Combine(Path.GetTempPath(), "input-translate-focus.txt");
+            var probePath = Path.Combine(Path.GetTempPath(), "vibelish-focus.txt");
             FocusProbe.Dump(probePath);
             Console.WriteLine("WROTE " + probePath);
             return 0;
@@ -444,7 +515,7 @@ static class Program
             _ = AttachConsole(AttachParentProcess);
             if (args.Length < 2)
             {
-                Console.WriteLine("用法：InputTranslate.exe --translate 要翻译的中文");
+                Console.WriteLine("用法：Vibelish.exe --translate 要翻译的中文或英文 [引擎] [接口地址 模型]");
                 return 2;
             }
 
@@ -467,7 +538,10 @@ static class Program
                     first = watch.ElapsedMilliseconds;
             }).GetAwaiter().GetResult();
             Console.WriteLine(result.Ok ? result.Text : "ERROR " + result.Detail);
-            Console.WriteLine("engine=" + result.Detail + " first=" + (result.FirstMs > 0 ? result.FirstMs : first) + "ms total=" + watch.ElapsedMilliseconds + "ms"
+            if (result.Better is { Length: > 0 } better)
+                Console.WriteLine("better=" + better);
+            Console.WriteLine("engine=" + result.Detail + " dir=" + (result.ToChinese ? "en2zh" : "zh2en")
+                + " first=" + (result.FirstMs > 0 ? result.FirstMs : first) + "ms total=" + watch.ElapsedMilliseconds + "ms"
                 + " words=" + (result.Words?.Count ?? 0));
             return result.Ok ? 0 : 1;
         }
@@ -488,13 +562,13 @@ static class Program
             return 0;
         }
 
-        using var mutex = new Mutex(true, @"Local\InputTranslate.Single", out var created);
+        using var mutex = new Mutex(true, @"Local\Vibelish.Single", out var created);
         if (!created)
         {
             // Ask the running instance to show its card instead of failing silently.
             try
             {
-                using var show = EventWaitHandle.OpenExisting(@"Local\InputTranslate.Show");
+                using var show = EventWaitHandle.OpenExisting(@"Local\Vibelish.Show");
                 show.Set();
             }
             catch
@@ -535,7 +609,7 @@ static class TraceLog
     static readonly object Gate = new();
 
     public static string FilePath =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "InputTranslate", "run.log");
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Vibelish", "run.log");
 
     /// <summary>只记事件和长度，不记原文。超过 1 MB 换成 run.old.log。</summary>
     public static void Note(string line)

@@ -6,12 +6,23 @@ using System.Runtime.InteropServices.ComTypes;
 using System.Text;
 using Microsoft.Win32;
 
-namespace InputTranslateSetup;
+namespace VibelishSetup;
 
 static class InstallerCore
 {
-    public const string ProductName = "输入翻译";
-    public const string Publisher = "InputTranslate";
+    public const string ProductName = "Vibelish";
+    public const string Publisher = "Guiguzic";
+    public const string Tagline = "写 prompt 的时候，顺手学英语";
+
+    // 1.2.0 以前叫「输入翻译」（InputTranslate）。装新版时把旧版的程序、快捷方式和启动项清掉，
+    // 设置文件留着，新版第一次启动会自己搬过去。
+    const string LegacyName = "InputTranslate";
+    const string LegacyDisplayName = "输入翻译";
+
+    static string LegacyDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Programs",
+        LegacyName);
 
     /// <summary>安装包自己的版本，由 build.ps1 的 -p:Version 写进程序集。</summary>
     public static string ProductVersion =>
@@ -20,12 +31,13 @@ static class InstallerCore
     public static string TargetDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Programs",
-        "InputTranslate");
+        "Vibelish");
 
-    public static string ExePath => Path.Combine(TargetDirectory, "InputTranslate.exe");
+    public static string ExePath => Path.Combine(TargetDirectory, "Vibelish.exe");
 
     const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\InputTranslate";
+    const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Vibelish";
+    const string LegacyUninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\InputTranslate";
 
     /// <summary>已经装过的版本；没装过返回空字符串。</summary>
     public static string InstalledVersion
@@ -36,7 +48,11 @@ static class InstallerCore
             {
                 using var key = Registry.CurrentUser.OpenSubKey(UninstallKeyPath, false);
                 var version = key?.GetValue("DisplayVersion") as string ?? "";
-                return version.Length > 0 && File.Exists(ExePath) ? version : "";
+                if (version.Length > 0 && File.Exists(ExePath))
+                    return version;
+                using var legacy = Registry.CurrentUser.OpenSubKey(LegacyUninstallKeyPath, false);
+                var legacyVersion = legacy?.GetValue("DisplayVersion") as string ?? "";
+                return legacyVersion.Length > 0 && File.Exists(Path.Combine(LegacyDirectory, LegacyName + ".exe")) ? legacyVersion : "";
             }
             catch
             {
@@ -45,7 +61,7 @@ static class InstallerCore
         }
     }
 
-    /// <summary>当前是否开机自动启动（更新时沿用用户原来的选择）。</summary>
+    /// <summary>当前是否开机自动启动（更新时沿用用户原来的选择，包括旧版「输入翻译」的）。</summary>
     public static bool StartupEnabled
     {
         get
@@ -53,7 +69,8 @@ static class InstallerCore
             try
             {
                 using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, false);
-                return key?.GetValue("InputTranslate") is string value && value.Length > 0;
+                return key?.GetValue(ProductName) is string value && value.Length > 0
+                    || key?.GetValue(LegacyName) is string legacy && legacy.Length > 0;
             }
             catch
             {
@@ -69,7 +86,7 @@ static class InstallerCore
         {
             try
             {
-                using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("InputTranslateSetup.payload.zip");
+                using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("VibelishSetup.payload.zip");
                 if (stream == null)
                     return 0;
                 using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
@@ -83,22 +100,27 @@ static class InstallerCore
         }
     }
 
-    public static bool DesktopShortcutExists => File.Exists(DesktopShortcutPath);
+    public static bool DesktopShortcutExists => File.Exists(DesktopShortcutPath) || File.Exists(LegacyDesktopShortcutPath);
 
     static string DesktopShortcutPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), ProductName + ".lnk");
 
+    static string LegacyDesktopShortcutPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), LegacyDisplayName + ".lnk");
+
     public static void Install(bool startup, bool desktopShortcut, Action<string> progress)
     {
-        progress("正在关闭已运行的输入翻译…");
-        KillRunningInstances();
+        progress("正在关闭已运行的 Vibelish…");
+        KillRunningInstances(ProductName);
+        KillRunningInstances(LegacyName);
+        RemoveLegacyInstall();
 
         // Remove any pending uninstall cleanup so it cannot delete the new install.
         try
         {
             using var runOnce = Registry.CurrentUser.OpenSubKey(
                 @"Software\Microsoft\Windows\CurrentVersion\RunOnce", true);
-            runOnce?.DeleteValue("InputTranslateCleanup", false);
+            runOnce?.DeleteValue("VibelishCleanup", false);
         }
         catch
         {
@@ -121,7 +143,7 @@ static class InstallerCore
     static void ExtractPayload(string destination)
     {
         var assembly = Assembly.GetExecutingAssembly();
-        using var stream = assembly.GetManifestResourceStream("InputTranslateSetup.payload.zip")
+        using var stream = assembly.GetManifestResourceStream("VibelishSetup.payload.zip")
             ?? throw new InvalidOperationException("安装包损坏：找不到 payload.zip");
         using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
         var root = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
@@ -167,9 +189,9 @@ static class InstallerCore
         }
     }
 
-    static void KillRunningInstances()
+    static void KillRunningInstances(string name)
     {
-        foreach (var process in Process.GetProcessesByName("InputTranslate"))
+        foreach (var process in Process.GetProcessesByName(name))
         {
             try
             {
@@ -183,16 +205,79 @@ static class InstallerCore
         }
     }
 
+    /// <summary>旧版的启动项、卸载信息、快捷方式和程序文件夹。每一步都是尽力而为，失败不影响安装新版。</summary>
+    static void RemoveLegacyInstall()
+    {
+        void Try(Action action)
+        {
+            try
+            {
+                action();
+            }
+            catch
+            {
+                // Ignore.
+            }
+        }
+
+        Try(() =>
+        {
+            using var run = Registry.CurrentUser.OpenSubKey(RunKeyPath, true);
+            run?.DeleteValue(LegacyName, false);
+        });
+        Try(() =>
+        {
+            using var runOnce = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\RunOnce", true);
+            runOnce?.DeleteValue(LegacyName + "Cleanup", false);
+        });
+        Try(() => Registry.CurrentUser.DeleteSubKeyTree(LegacyUninstallKeyPath, false));
+        Try(() =>
+        {
+            var startMenu = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), LegacyDisplayName);
+            if (Directory.Exists(startMenu))
+                Directory.Delete(startMenu, true);
+        });
+        Try(() =>
+        {
+            if (File.Exists(LegacyDesktopShortcutPath))
+                File.Delete(LegacyDesktopShortcutPath);
+        });
+
+        // 输入法钩子注入到别的进程里会锁住文件，删不掉的留到下次登录再删。
+        foreach (var directory in new[]
+                 {
+                     LegacyDirectory,
+                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), LegacyName),
+                 })
+        {
+            if (!Directory.Exists(directory))
+                continue;
+            try
+            {
+                Directory.Delete(directory, true);
+            }
+            catch
+            {
+                Try(() =>
+                {
+                    using var runOnce = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\RunOnce", true);
+                    runOnce?.SetValue(LegacyName + "Cleanup" + (directory == LegacyDirectory ? "" : "Data"),
+                        "cmd.exe /c rmdir /s /q \"" + directory + "\"", RegistryValueKind.String);
+                });
+            }
+        }
+    }
+
     static void CreateShortcuts(bool desktopShortcut)
     {
         var startMenu = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), ProductName);
         Directory.CreateDirectory(startMenu);
-        SaveShortcut(Path.Combine(startMenu, ProductName + ".lnk"), ExePath, "", "中文输入 → 考研级英文");
-        SaveShortcut(Path.Combine(startMenu, "卸载" + ProductName + ".lnk"), ExePath, "--uninstall", "卸载输入翻译");
+        SaveShortcut(Path.Combine(startMenu, ProductName + ".lnk"), ExePath, "", Tagline);
+        SaveShortcut(Path.Combine(startMenu, "卸载 " + ProductName + ".lnk"), ExePath, "--uninstall", "卸载 Vibelish");
 
         if (desktopShortcut)
         {
-            SaveShortcut(DesktopShortcutPath, ExePath, "", "中文输入 → 考研级英文");
+            SaveShortcut(DesktopShortcutPath, ExePath, "", Tagline);
         }
         else if (File.Exists(DesktopShortcutPath))
         {
@@ -208,7 +293,7 @@ static class InstallerCore
     }
 
     /// <summary>直接用 IShellLinkW 写快捷方式。.NET Framework 里用 dynamic 调 WScript.Shell
-    /// 会把中文路径变成问号（「输入翻译.lnk」存不下来）。</summary>
+    /// 会把中文路径变成问号（「卸载 Vibelish.lnk」存不下来）。</summary>
     static void SaveShortcut(string path, string target, string arguments, string description)
     {
         var link = (IShellLinkW)new ShellLink();
@@ -263,9 +348,9 @@ static class InstallerCore
         using var run = Registry.CurrentUser.CreateSubKey(RunKeyPath, true)
             ?? throw new InvalidOperationException("无法写入开机启动项");
         if (enabled)
-            run.SetValue("InputTranslate", "\"" + ExePath + "\" --autostart", RegistryValueKind.String);
+            run.SetValue("Vibelish", "\"" + ExePath + "\" --autostart", RegistryValueKind.String);
         else
-            run.DeleteValue("InputTranslate", false);
+            run.DeleteValue("Vibelish", false);
     }
 
     static void WriteUninstallEntry()

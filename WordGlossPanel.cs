@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <summary>
 /// 卡片里的查词区：浅灰圆角底，义项是一列可点的行，选中的打勾；选中后可以按这个意思改一句。

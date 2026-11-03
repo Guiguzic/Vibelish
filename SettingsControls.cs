@@ -1,7 +1,7 @@
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 // 设置窗口用的一组自绘控件：开关、分段选择、下拉按钮、输入框、分组列表、侧栏。
 // 都在绘制时读 Theme.Current，换主题后 Invalidate 一下就跟着变。

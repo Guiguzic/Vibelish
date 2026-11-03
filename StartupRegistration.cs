@@ -1,12 +1,12 @@
 using Microsoft.Win32;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <summary>Per-user "start with Windows" entry in HKCU\...\Run.</summary>
 static class StartupRegistration
 {
     const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    const string ValueName = "InputTranslate";
+    const string ValueName = "Vibelish";
 
     public static string ExecutablePath =>
         Environment.ProcessPath ?? Application.ExecutablePath;
@@ -111,7 +111,7 @@ static class StartupRegistration
         {
             using var runOnce = Registry.CurrentUser.OpenSubKey(
                 @"Software\Microsoft\Windows\CurrentVersion\RunOnce", true);
-            runOnce?.DeleteValue("InputTranslateCleanup", false);
+            runOnce?.DeleteValue("VibelishCleanup", false);
         }
         catch
         {

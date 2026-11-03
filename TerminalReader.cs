@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <summary>
 /// 读取 Windows Terminal、经典控制台，以及 VS Code / Cursor 集成终端里光标所在的输入行。
@@ -338,7 +338,7 @@ static class TerminalReader
     {
         if (string.IsNullOrEmpty(text))
             return "";
-        return SecretToken.Replace(text, "[令牌已隐藏]");
+        return SecretToken.Replace(text, "[•••]");
     }
 
     internal static List<string> SelectInputRows(IReadOnlyList<string> oldestFirst, int cursorIndex)
@@ -442,7 +442,7 @@ static class TerminalReader
     {
         var cases = new (string Name, string[] Rows, int Cursor, string Expect)[]
         {
-            ("ps-path", ["PS E:\\workplaece\\InputTranslate> 你好"], -1, "你好"),
+            ("ps-path", ["PS E:\\workplaece\\Vibelish> 你好"], -1, "你好"),
             ("ps-short", ["PS> 你好"], -1, "你好"),
             ("cmd", ["C:\\Windows\\System32> 你好"], -1, "你好"),
             ("plain", ["今天天气不错"], -1, "今天天气不错"),
@@ -455,7 +455,7 @@ static class TerminalReader
             ("blank-caret", ["PS C:\\> 你好", ""], -1, "你好"),
             ("empty-prompt", ["PS C:\\Users\\foo> "], -1, ""),
             ("below-cursor", ["> 第一行港口沙盘", "步进电机也要上传。", "Grok 4.7 Fast · always-approve"], 0, "第一行港口沙盘\n步进电机也要上传。"),
-            ("cursor-at-end", ["> 第一行港口沙盘", "2│步进电机也要上传。", "备注 ghp_aaaaaaaaaaaaaaaaaaaa"], 2, "第一行港口沙盘\n步进电机也要上传。\n备注 [令牌已隐藏]"),
+            ("cursor-at-end", ["> 第一行港口沙盘", "2│步进电机也要上传。", "备注 ghp_aaaaaaaaaaaaaaaaaaaa"], 2, "第一行港口沙盘\n步进电机也要上传。\n备注 [•••]"),
             ("stop-blank", ["> 只要这一段", "", "下面是别的输出"], 0, "只要这一段"),
             ("no-swallow", ["你好", "下面还有一段"], 0, "你好"),
             ("cursor-on-status", ["> 港口沙盘", "步进电机", "Grok 4.7 · always-approve"], 2, "港口沙盘\n步进电机"),

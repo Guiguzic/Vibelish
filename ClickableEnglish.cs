@@ -1,4 +1,4 @@
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <summary>
 /// 画出英文译文。鼠标移到单词上会高亮，点一下就查这个词；拖动超过几像素仍是在拖卡片。

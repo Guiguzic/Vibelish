@@ -1,4 +1,4 @@
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <summary>Reads the focused input box on a background thread so UI Automation can never
 /// freeze the tray UI. Also runs OCR for controls that do not expose their text.</summary>
@@ -20,7 +20,7 @@ sealed class FieldWatcher : IDisposable
         _thread = new Thread(Loop)
         {
             IsBackground = true,
-            Name = "InputTranslate.FieldWatcher",
+            Name = "Vibelish.FieldWatcher",
         };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();

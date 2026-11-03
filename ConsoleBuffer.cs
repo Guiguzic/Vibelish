@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <summary>
 /// 从目标控制台的屏幕缓冲读取光标所在行。Windows Terminal 和经典控制台的

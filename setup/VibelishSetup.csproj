@@ -8,14 +8,14 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
-    <AssemblyName>InputTranslateSetup</AssemblyName>
-    <RootNamespace>InputTranslateSetup</RootNamespace>
+    <AssemblyName>VibelishSetup</AssemblyName>
+    <RootNamespace>VibelishSetup</RootNamespace>
     <ApplicationIcon>..\assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <PlatformTarget>x64</PlatformTarget>
-    <Version>1.1.0</Version>
-    <Product>输入翻译</Product>
-    <Description>输入翻译 安装程序</Description>
+    <Version>1.2.0</Version>
+    <Product>Vibelish</Product>
+    <Description>Vibelish 安装程序</Description>
     <GenerateSupportedRuntime>true</GenerateSupportedRuntime>
   </PropertyGroup>
   <ItemGroup>
@@ -26,7 +26,7 @@
     <Reference Include="System.IO.Compression.FileSystem" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="payload.zip" LogicalName="InputTranslateSetup.payload.zip" Condition="Exists('payload.zip')" />
-    <EmbeddedResource Include="..\assets\app.ico" LogicalName="InputTranslateSetup.app.ico" />
+    <EmbeddedResource Include="payload.zip" LogicalName="VibelishSetup.payload.zip" Condition="Exists('payload.zip')" />
+    <EmbeddedResource Include="..\assets\app.ico" LogicalName="VibelishSetup.app.ico" />
   </ItemGroup>
 </Project>

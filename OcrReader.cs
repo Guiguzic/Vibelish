@@ -6,7 +6,7 @@ using System.Windows.Automation;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 static class OcrReader
 {

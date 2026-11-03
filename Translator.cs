@@ -5,18 +5,22 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 /// <param name="Detail">成功时是译文来源（例如 “deepseek-chat · 考研”），失败时是给用户看的原因。</param>
 /// <param name="Words">大模型顺带挑出的重点词；没有就是 null。</param>
 /// <param name="FirstMs">流式输出时第一个词出来用了多久（毫秒），0 表示没有流式。</param>
+/// <param name="ToChinese">英译中（Text 是中文）还是中译英（Text 是英文）。</param>
+/// <param name="Better">英译中时大模型给的更地道的英文；空字符串表示原句已经很地道，null 表示没有评价（免费引擎）。</param>
 sealed record TranslateResult(
     bool Ok,
     string Text,
     string Detail,
     IReadOnlyList<StudyWord>? Words = null,
     long FirstMs = 0,
-    long TotalMs = 0);
+    long TotalMs = 0,
+    bool ToChinese = false,
+    string? Better = null);
 
 sealed class Translator
 {
@@ -63,6 +67,7 @@ sealed class Translator
     {
         var probe = config.Clone();
         probe.Engine = "openai";
+        probe.Direction = "zh2en";
         probe.EnglishLevel = "plain";
         probe.StudyWords = false;
         return new Translator(probe).TranslateAsync("今天天气不错，我们去公园走走吧。", cancellationToken, _ => { });
@@ -107,7 +112,7 @@ sealed class Translator
         if (_studyCache.TryGetValue(key, out var cached))
             return cached;
 
-        var user = "英文：\n" + TrimForLookup(english) + "\n\n中文原文：\n" + TrimForLookup(chinese);
+        var user = "英文：\n" + TrimForLookup(english) + "\n\n中文意思：\n" + TrimForLookup(chinese);
         var chat = await ChatAsync(StudyPrompt, user, 0.2, cancellationToken);
         if (!chat.Ok)
             return Array.Empty<StudyWord>();
@@ -179,19 +184,21 @@ sealed class Translator
         if (text.Length == 0)
             return new TranslateResult(false, "", "没有可翻译的文字");
 
+        var toChinese = _config.ToChinese(text);
         var key = _config.Engine + "\n" + _config.EnglishLevel + "\n" + _config.OpenAiBaseUrl + "\n" + _config.OpenAiModel
-            + "\n" + _config.StudyWords + "\n" + text;
+            + "\n" + _config.StudyWords + "\n" + toChinese + "\n" + text;
         if (_cache.TryGetValue(key, out var cached))
             return cached;
 
         var result = _config.Engine switch
         {
-            "transmart" => await TranslateTransmartAsync(text, cancellationToken),
-            "mymemory" => await TranslateMyMemoryAsync(text, cancellationToken),
-            "google" => await TranslateGoogleAsync(text, cancellationToken),
-            "openai" => await TranslateOpenAiAsync(text, cancellationToken, partial),
-            _ => await TranslateAutoAsync(text, cancellationToken, partial),
+            "transmart" => await TranslateTransmartAsync(text, toChinese, cancellationToken),
+            "mymemory" => await TranslateMyMemoryAsync(text, toChinese, cancellationToken),
+            "google" => await TranslateGoogleAsync(text, toChinese, cancellationToken),
+            "openai" => await TranslateOpenAiAsync(text, toChinese, cancellationToken, partial),
+            _ => await TranslateAutoAsync(text, toChinese, cancellationToken, partial),
         };
+        result = result with { ToChinese = toChinese };
 
         if (result.Ok && result.Text.Length > 0)
         {
@@ -204,37 +211,37 @@ sealed class Translator
     }
 
     /// <summary>配置了大模型接口就用它（难度设置只对它生效），失败或没配置时用免费引擎。</summary>
-    async Task<TranslateResult> TranslateAutoAsync(string text, CancellationToken cancellationToken, Action<string>? partial)
+    async Task<TranslateResult> TranslateAutoAsync(string text, bool toChinese, CancellationToken cancellationToken, Action<string>? partial)
     {
         var chatDetail = "";
         if (_config.HasChatApi)
         {
-            var chat = await TranslateOpenAiAsync(text, cancellationToken, partial);
+            var chat = await TranslateOpenAiAsync(text, toChinese, cancellationToken, partial);
             if (chat.Ok)
                 return chat;
             chatDetail = chat.Detail;
             TraceLog.Note("auto chat fail " + TraceLog.Safe(chat.Detail));
         }
 
-        var free = await TranslateFreeAsync(text, cancellationToken);
+        var free = await TranslateFreeAsync(text, toChinese, cancellationToken);
         if (free.Ok)
             return chatDetail.Length == 0 ? free : free with { Detail = free.Detail + "（大模型接口失败，已改用免费引擎）" };
         return chatDetail.Length == 0 ? free : free with { Detail = chatDetail + "；" + free.Detail };
     }
 
     /// <summary>先问腾讯交互翻译（国内最快）；1.2 秒还没回来或失败，就同时问 MyMemory 和 Google，谁先成功用谁。</summary>
-    async Task<TranslateResult> TranslateFreeAsync(string text, CancellationToken cancellationToken)
+    async Task<TranslateResult> TranslateFreeAsync(string text, bool toChinese, CancellationToken cancellationToken)
     {
         var watch = Stopwatch.StartNew();
         using var race = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var pending = new List<Task<TranslateResult>> { TranslateTransmartAsync(text, race.Token) };
+        var pending = new List<Task<TranslateResult>> { TranslateTransmartAsync(text, toChinese, race.Token) };
         var head = await Task.WhenAny(pending[0], Task.Delay(HedgeAfter, cancellationToken));
         cancellationToken.ThrowIfCancellationRequested();
         if (head == pending[0] && pending[0].Result.Ok)
             return pending[0].Result with { TotalMs = watch.ElapsedMilliseconds };
 
-        pending.Add(TranslateMyMemoryAsync(text, race.Token));
-        pending.Add(TranslateGoogleAsync(text, race.Token));
+        pending.Add(TranslateMyMemoryAsync(text, toChinese, race.Token));
+        pending.Add(TranslateGoogleAsync(text, toChinese, race.Token));
         var failures = new List<string>();
         try
         {
@@ -256,7 +263,7 @@ sealed class Translator
         return new TranslateResult(false, "", string.Join("；", failures));
     }
 
-    async Task<TranslateResult> TranslateTransmartAsync(string text, CancellationToken cancellationToken)
+    async Task<TranslateResult> TranslateTransmartAsync(string text, bool toChinese, CancellationToken cancellationToken)
     {
         try
         {
@@ -265,8 +272,8 @@ sealed class Translator
                 header = new { fn = "auto_translation", client_key = TransmartClient },
                 type = "plain",
                 model_category = "normal",
-                source = new { lang = "zh", text_list = new[] { text } },
-                target = new { lang = "en" },
+                source = new { lang = toChinese ? "en" : "zh", text_list = new[] { text } },
+                target = new { lang = toChinese ? "zh" : "en" },
             };
             using var request = new HttpRequestMessage(HttpMethod.Post, "https://transmart.qq.com/api/imt")
             {
@@ -287,10 +294,10 @@ sealed class Translator
             var parts = list.EnumerateArray()
                 .Where(item => item.ValueKind == JsonValueKind.String)
                 .Select(item => (item.GetString() ?? "").Trim());
-            var english = string.Join("\n", parts).Trim();
-            if (english.Length == 0)
+            var translated = string.Join("\n", parts).Trim();
+            if (translated.Length == 0)
                 return new TranslateResult(false, "", "腾讯交互翻译没有返回译文");
-            return new TranslateResult(true, english, "腾讯交互翻译");
+            return new TranslateResult(true, translated, "腾讯交互翻译");
         }
         catch (TimeoutException)
         {
@@ -306,14 +313,15 @@ sealed class Translator
         }
     }
 
-    async Task<TranslateResult> TranslateMyMemoryAsync(string text, CancellationToken cancellationToken)
+    async Task<TranslateResult> TranslateMyMemoryAsync(string text, bool toChinese, CancellationToken cancellationToken)
     {
         try
         {
             var sb = new StringBuilder();
             foreach (var piece in SplitPieces(text, 450))
             {
-                var url = "https://api.mymemory.translated.net/get?langpair=zh-CN|en&q=" + Uri.EscapeDataString(piece);
+                var url = "https://api.mymemory.translated.net/get?langpair=" + (toChinese ? "en|zh-CN" : "zh-CN|en")
+                    + "&q=" + Uri.EscapeDataString(piece);
                 var (status, body) = await GetAsync(url, FreeTimeout, cancellationToken);
                 if (status < 200 || status >= 300)
                     return new TranslateResult(false, "", "MyMemory 返回 " + status);
@@ -321,15 +329,15 @@ sealed class Translator
                 var translated = doc.RootElement.GetProperty("responseData").GetProperty("translatedText").GetString() ?? "";
                 if (translated.StartsWith("MYMEMORY WARNING", StringComparison.OrdinalIgnoreCase))
                     return new TranslateResult(false, "", "MyMemory 今天的免费额度用完了");
-                if (sb.Length > 0)
+                if (sb.Length > 0 && !toChinese)
                     sb.Append(' ');
                 sb.Append(WebUtility.HtmlDecode(translated).Trim());
             }
 
-            var english = sb.ToString().Trim();
-            if (english.Length == 0)
+            var result = sb.ToString().Trim();
+            if (result.Length == 0)
                 return new TranslateResult(false, "", "MyMemory 没有返回译文");
-            return new TranslateResult(true, english, "MyMemory");
+            return new TranslateResult(true, result, "MyMemory");
         }
         catch (TimeoutException)
         {
@@ -345,22 +353,22 @@ sealed class Translator
         }
     }
 
-    async Task<TranslateResult> TranslateGoogleAsync(string text, CancellationToken cancellationToken)
+    async Task<TranslateResult> TranslateGoogleAsync(string text, bool toChinese, CancellationToken cancellationToken)
     {
         try
         {
             var sb = new StringBuilder();
             foreach (var piece in SplitPieces(text, 1500))
             {
-                var url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q="
-                    + Uri.EscapeDataString(piece);
+                var url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=" + (toChinese ? "zh-CN" : "en")
+                    + "&dt=t&q=" + Uri.EscapeDataString(piece);
                 var (status, body) = await GetAsync(url, FreeTimeout, cancellationToken);
                 if (status < 200 || status >= 300)
                     return new TranslateResult(false, "", "Google 返回 " + status);
                 var translated = ParseGoogle(body);
                 if (translated.Length == 0)
                     return new TranslateResult(false, "", "Google 没有返回译文");
-                if (sb.Length > 0)
+                if (sb.Length > 0 && !toChinese)
                     sb.Append(' ');
                 sb.Append(translated.Trim());
             }
@@ -381,8 +389,9 @@ sealed class Translator
         }
     }
 
-    /// <summary>一次请求就出考研难度的译文；开了「重点词」时顺带在后面给出重点词，不再单独请求。</summary>
-    async Task<TranslateResult> TranslateOpenAiAsync(string text, CancellationToken cancellationToken, Action<string>? partial)
+    /// <summary>一次请求就出考研难度的译文；开了「重点词」时顺带在后面给出重点词，不再单独请求。
+    /// 英译中时后面还带一句更地道的英文。</summary>
+    async Task<TranslateResult> TranslateOpenAiAsync(string text, bool toChinese, CancellationToken cancellationToken, Action<string>? partial)
     {
         if (!_config.HasChatApi)
             return new TranslateResult(false, "", "请在设置里填写大模型接口地址、密钥和模型");
@@ -405,17 +414,20 @@ sealed class Translator
             };
         }
 
-        var chat = await ChatAsync(TranslationPrompt(level, withWords), text, level == "kaoyan" ? 0.3 : 0.2, cancellationToken, onDelta);
+        var prompt = toChinese ? ReversePrompt(level, withWords) : TranslationPrompt(level, withWords);
+        var chat = await ChatAsync(prompt, text, level == "kaoyan" ? 0.3 : 0.2, cancellationToken, onDelta);
         if (!chat.Ok)
             return chat;
 
-        var (english, words) = SplitWords(chat.Text);
-        if (english.Length == 0)
+        var (translated, words, better) = SplitWords(chat.Text);
+        if (translated.Length == 0)
             return new TranslateResult(false, "", "接口没有返回译文");
-        if (withWords && words.Count > 0)
-            RememberStudy(english + "\n" + text, words);
-        return new TranslateResult(true, english, ModelLabel() + " · " + _config.LevelLabel,
-            withWords ? words : null, first, watch.ElapsedMilliseconds);
+        if (!toChinese)
+            better = null;
+        else if (better != null && Lang.SameSentence(better, text))
+            better = "";
+        return new TranslateResult(true, translated, ModelLabel() + " · " + (toChinese ? "英译中" : _config.LevelLabel),
+            withWords ? words : null, first, watch.ElapsedMilliseconds, toChinese, better);
     }
 
     /// <summary>调一次 chat/completions。除了调用方主动取消，所有错误都变成失败结果，不抛异常。
@@ -650,16 +662,16 @@ sealed class Translator
         return text.TrimStart('"', '“', ' ').TrimEnd();
     }
 
-    /// <summary>把「译文 + 分隔行 + 重点词 JSON」拆开。</summary>
-    internal static (string English, IReadOnlyList<StudyWord> Words) SplitWords(string raw)
+    /// <summary>把「译文 + 分隔行 + JSON（重点词，英译中时还有更地道的说法）」拆开。</summary>
+    internal static (string Text, IReadOnlyList<StudyWord> Words, string? Better) SplitWords(string raw)
     {
         var text = ThinkBlock.Replace(raw ?? "", "");
         var marker = WordsSplit.Match(text);
         if (!marker.Success)
-            return (CleanModelText(text), Array.Empty<StudyWord>());
-        var english = CleanModelText(text[..marker.Index]);
-        var words = WordStudy.ParseStudy(text[(marker.Index + marker.Length)..]);
-        return (english, words);
+            return (CleanModelText(text), Array.Empty<StudyWord>(), null);
+        var translated = CleanModelText(text[..marker.Index]);
+        var json = text[(marker.Index + marker.Length)..];
+        return (translated, WordStudy.ParseStudy(json), WordStudy.ParseBetter(json));
     }
 
     /// <summary>各家关闭「深度思考」的参数不一样；不认识的服务就不带。</summary>
@@ -869,7 +881,7 @@ sealed class Translator
             return pieces;
         }
 
-        var parts = Regex.Split(text, @"(?<=[。！？!?；;\n])");
+        var parts = Regex.Split(text, @"(?<=[。！？!?；;\n]|\.\s)");
         var buf = new StringBuilder();
         foreach (var part in parts)
         {
@@ -935,6 +947,37 @@ sealed class Translator
             + "Pick 3 to 6 items worth learning; skip proper nouns, product names, URLs and function words such as the, a, is, to, of.";
     }
 
+    /// <summary>英译中：先给中文意思，学习者对照着看自己写的英文是不是这个意思；再给一句更地道的英文和重点词。</summary>
+    static string ReversePrompt(string level, bool withWords)
+    {
+        var target = level switch
+        {
+            "plain" => "natural, idiomatic everyday English",
+            "cet6" => "clear, formal written English at upper-intermediate level (CET-6)",
+            _ => "precise, advanced written English at C1-C2 level for students preparing for 考研英语, "
+                + "with less common but exact words and, where it reads naturally, one complex construction; no contractions",
+        };
+
+        var json = withWords
+            ? "{\"better\":\"...\",\"words\":[{\"en\":\"...\",\"zh\":\"...\",\"why\":\"...\"}]}"
+            : "{\"better\":\"...\"}";
+        var prompt = "A Chinese learner of English wrote the English text below. "
+            + "Translate it into natural Simplified Chinese that conveys exactly what the English says, so the learner can check whether it means what they intended; "
+            + "if the English is unclear or ungrammatical, translate what it most plausibly means. Keep names, numbers, code and line breaks. "
+            + "First output only the Chinese translation, with no notes, labels or quotation marks. "
+            + "Then output a line containing only " + WordsMarker + " followed by one line of JSON: " + json + ". "
+            + "\"better\" is the learner's text corrected and rewritten as " + target + ", keeping the meaning and every detail; "
+            + "use an empty string if the original is already correct and natural at that level.";
+        if (withWords)
+        {
+            prompt += " \"words\" lists 3 to 6 words or phrases worth learning, taken exactly from \"better\" (or from the original if \"better\" is empty), "
+                + "with \"zh\" the Chinese meaning in this sentence and \"why\" a Chinese note of at most 16 characters, for example what the original got wrong; "
+                + "skip proper nouns, product names, URLs and function words such as the, a, is, to, of.";
+        }
+
+        return prompt;
+    }
+
     const string StudyPrompt =
         "你在帮中国学生学一句刚译好的英文。挑 3 到 6 个值得记的词或短语，优先选这句里词义不那么直白、或值得积累的用法。"
         + "跳过专有名词、产品名、网址，也跳过 the、a、is、are、to、of 这种功能词。"
@@ -972,7 +1015,7 @@ sealed class Translator
             DefaultRequestVersion = HttpVersion.Version20,
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
         };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("InputTranslate/" + (typeof(Translator).Assembly.GetName().Version?.ToString(3) ?? "1.0"));
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Vibelish/" + (typeof(Translator).Assembly.GetName().Version?.ToString(3) ?? "1.0"));
         return client;
     }
 }

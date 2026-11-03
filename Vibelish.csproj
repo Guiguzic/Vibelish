@@ -6,19 +6,19 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <AssemblyName>InputTranslate</AssemblyName>
-    <RootNamespace>InputTranslate</RootNamespace>
-    <Product>输入翻译</Product>
-    <Version>1.1.0</Version>
-    <Description>识别当前输入框，并把这一段话翻译成英文。</Description>
-    <Company>InputTranslate</Company>
-    <Copyright>InputTranslate</Copyright>
+    <AssemblyName>Vibelish</AssemblyName>
+    <RootNamespace>Vibelish</RootNamespace>
+    <Product>Vibelish</Product>
+    <Version>1.2.0</Version>
+    <Description>写 prompt 的时候，顺手学英语：中英互译、重点词和更地道的说法。</Description>
+    <Company>Vibelish</Company>
+    <Copyright>Copyright (c) 2026 Guiguzic</Copyright>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
     <ApplicationIcon>assets\app.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
-    <EmbeddedResource Include="assets\app.ico" LogicalName="InputTranslate.app.ico" />
+    <EmbeddedResource Include="assets\app.ico" LogicalName="Vibelish.app.ico" />
   </ItemGroup>
   <ItemGroup>
     <Compile Remove="setup\**" />

@@ -43,7 +43,7 @@ $linePen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
 $linePen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
 $g.DrawLine($linePen, 84, 196, 172, 196)
 
-$png = Join-Path $env:TEMP 'inputtranslate-icon.png'
+$png = Join-Path $env:TEMP 'vibelish-icon.png'
 $bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
 $g.Dispose()
 $bmp.Dispose()

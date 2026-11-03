@@ -18,7 +18,7 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     }
 }
 
-$version = (Select-String -Path (Join-Path $root 'InputTranslate.csproj') -Pattern '<Version>([^<]+)</Version>').Matches.Groups[1].Value
+$version = (Select-String -Path (Join-Path $root 'Vibelish.csproj') -Pattern '<Version>([^<]+)</Version>').Matches.Groups[1].Value
 if (-not $version) { $version = '1.0.0' }
 Write-Host ('Version ' + $version)
 
@@ -54,7 +54,7 @@ function Build-NativeHook {
         return
     }
 
-    $temp = Join-Path $env:TEMP 'inputtranslate-native'
+    $temp = Join-Path $env:TEMP 'vibelish-native'
     New-Item -ItemType Directory -Force $temp | Out-Null
     $obj = Join-Path $temp 'imehook.obj'
     $lib = Join-Path $temp 'imehook.lib'
@@ -97,7 +97,7 @@ $uiaRuntime = Get-UiaRuntimeDir
 Write-Host ('UI Automation runtime: ' + $uiaRuntime)
 
 Write-Host 'Building managed app ...'
-dotnet build InputTranslate.csproj -c Release "-p:UiaRuntimeDir=$uiaRuntime"
+dotnet build Vibelish.csproj -c Release "-p:UiaRuntimeDir=$uiaRuntime"
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet build failed with exit code $LASTEXITCODE"
 }
@@ -106,21 +106,21 @@ if ($Publish) {
     Write-Host 'Publishing single-file build to publish\ ...'
     $publishDir = Join-Path $root 'publish'
     if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
-    dotnet publish InputTranslate.csproj -c Release -r win-x64 --self-contained true `
+    dotnet publish Vibelish.csproj -c Release -r win-x64 --self-contained true `
         -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true `
         -p:DebugType=None -p:DebugSymbols=false "-p:UiaRuntimeDir=$uiaRuntime" -o publish
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet publish failed with exit code $LASTEXITCODE"
     }
 
-    Remove-Item (Join-Path $publishDir 'InputTranslate.pdb'),
+    Remove-Item (Join-Path $publishDir 'Vibelish.pdb'),
         (Join-Path $publishDir 'UIAutomationClient.dll'), (Join-Path $publishDir 'UIAutomationTypes.dll'),
         (Join-Path $publishDir 'WindowsBase.dll') `
         -Force -ErrorAction SilentlyContinue
     if (-not (Test-Path (Join-Path $publishDir 'hook\imehook.dll'))) {
         throw 'publish\hook\imehook.dll is missing.'
     }
-    Write-Host 'Done: publish\InputTranslate.exe'
+    Write-Host 'Done: publish\Vibelish.exe'
 
     Write-Host 'Packing installer payload ...'
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -138,20 +138,20 @@ if ($Publish) {
     $installerDir = Join-Path $root 'installer'
     New-Item -ItemType Directory -Force $installerDir | Out-Null
     Get-ChildItem $installerDir -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -in '.msi', '.wxs', '.rtf' -or $_.Name -like 'InputTranslateSetup*' -or $_.Name -like 'InputTranslate-Setup-*' } |
+        Where-Object { $_.Extension -in '.msi', '.wxs', '.rtf' -or $_.Name -like 'VibelishSetup*' -or $_.Name -like 'Vibelish-Setup-*' } |
         Remove-Item -Force
 
-    $setupOut = Join-Path $env:TEMP 'inputtranslate-setup-build'
+    $setupOut = Join-Path $env:TEMP 'vibelish-setup-build'
     if (Test-Path $setupOut) { Remove-Item $setupOut -Recurse -Force }
     try {
-        dotnet build (Join-Path $setupDir 'InputTranslateSetup.csproj') -c Release `
+        dotnet build (Join-Path $setupDir 'VibelishSetup.csproj') -c Release `
             -p:DebugType=None -p:DebugSymbols=false "-p:Version=$version" -o $setupOut
         if ($LASTEXITCODE -ne 0) {
             throw "setup build failed with exit code $LASTEXITCODE"
         }
 
-        $finalExe = Join-Path $installerDir ('InputTranslate-Setup-' + $version + '.exe')
-        Copy-Item (Join-Path $setupOut 'InputTranslateSetup.exe') $finalExe -Force
+        $finalExe = Join-Path $installerDir ('Vibelish-Setup-' + $version + '.exe')
+        Copy-Item (Join-Path $setupOut 'VibelishSetup.exe') $finalExe -Force
         Write-Host ('Done: ' + $finalExe + ' (' + [math]::Round((Get-Item $finalExe).Length / 1MB, 1) + ' MB)')
     }
     finally {
@@ -160,5 +160,5 @@ if ($Publish) {
     }
 }
 else {
-    Write-Host 'Done: bin\Release\net9.0-windows10.0.19041.0\InputTranslate.exe'
+    Write-Host 'Done: bin\Release\net9.0-windows10.0.19041.0\Vibelish.exe'
 }

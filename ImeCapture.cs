@@ -2,7 +2,7 @@ using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
-namespace InputTranslate;
+namespace Vibelish;
 
 sealed class ImeCapture : IDisposable
 {
@@ -41,7 +41,7 @@ sealed class ImeCapture : IDisposable
         {
             var directory = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "InputTranslate",
+                "Vibelish",
                 "hook");
             Directory.CreateDirectory(directory);
             var hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source)))[..16];
@@ -66,8 +66,8 @@ sealed class ImeCapture : IDisposable
 
     public void Install()
     {
-        _mutex = new Mutex(false, @"Local\InputTranslate.Ime.Lock");
-        _mapping = MemoryMappedFile.CreateOrOpen(@"Local\InputTranslate.Ime.v1", 8192);
+        _mutex = new Mutex(false, @"Local\Vibelish.Ime.Lock");
+        _mapping = MemoryMappedFile.CreateOrOpen(@"Local\Vibelish.Ime.v1", 8192);
         _view = _mapping.CreateViewAccessor();
         _module = LoadLibrary(_dllPath);
         if (_module == IntPtr.Zero)

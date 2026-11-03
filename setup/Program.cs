@@ -1,4 +1,4 @@
-namespace InputTranslateSetup;
+namespace VibelishSetup;
 
 static class Program
 {
@@ -14,8 +14,8 @@ static class Program
 
         if (silent)
         {
-            // 静默安装没有界面，出错原因写到 %TEMP%\InputTranslate-Setup.log。
-            var log = Path.Combine(Path.GetTempPath(), "InputTranslate-Setup.log");
+            // 静默安装没有界面，出错原因写到 %TEMP%\Vibelish-Setup.log。
+            var log = Path.Combine(Path.GetTempPath(), "Vibelish-Setup.log");
             try
             {
                 InstallerCore.Install(true, false, _ => { });
