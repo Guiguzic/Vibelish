@@ -146,6 +146,25 @@ static class Program
         if (form.EnglishText != "The policy was implemented.")
             return "finish keeps english";
 
+        // 逐字输出时还不能复制，结束后才行。
+        form.BeginListening("考研", "");
+        form.SetTranslating(true);
+        form.ShowPartial("政策已经落实了。", "The policy");
+        if (form.EnglishText.Length != 0)
+            return "streaming english should not be copyable";
+        form.ShowTranslation("政策已经落实了。", "The policy was implemented.", "test");
+        form.SetTranslating(false);
+        if (form.EnglishText != "The policy was implemented.")
+            return "english after stream";
+
+        if (Translator.VisiblePart("<think>a</think>Policy is <<<WO") != "Policy is")
+            return "visible part marker prefix";
+        if (Translator.VisiblePart("<think>still thinking") != "")
+            return "visible part open think";
+        var (english, words) = Translator.SplitWords("It was implemented.\n<<< WORDS >>>\n{\"words\":[{\"en\":\"implement\",\"zh\":\"实施\",\"why\":\"正式\"}]}");
+        if (english != "It was implemented." || words.Count != 1 || words[0].English != "implement" || words[0].Chinese != "实施")
+            return "split words " + english + " / " + words.Count;
+
         if (!HotkeySpec.TryParse("ctrl+alt+t", out var spec) || spec.ToString() != "Ctrl+Alt+T")
             return "hotkey parse";
         if (HotkeySpec.TryParse("Shift+A", out _) || HotkeySpec.TryParse("Ctrl+Alt", out _))
@@ -166,13 +185,23 @@ static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Theme.Apply(theme, "normal");
-        if (what is "settings" or "settings-end")
+        // theme 可以带强调色，比如 dark+purple。
+        var parts = theme.Split('+');
+        var config = AppConfig.Load();
+        config.Accent = parts.Length > 1 ? parts[1] : config.Accent;
+        Theme.Apply(parts[0], "normal", config.Accent);
+        if (what.StartsWith("settings", StringComparison.Ordinal))
         {
-            var config = AppConfig.Load();
+            // settings 或 settings:2（直接打开第 3 页）。
+            var page = what.Length > 9 && int.TryParse(what[9..], out var index) ? index : 0;
             using var settings = new SettingsForm(config, "正在使用 " + config.Hotkey + "。");
-            if (what == "settings-end")
-                settings.Shown += (_, _) => settings.ScrollToEnd();
+            settings.Shown += (_, _) => settings.ShowPage(page);
+            settings.Saved += (next, _) =>
+            {
+                // 预览里也能实时看换主题、换强调色的效果，但不写配置文件。
+                Theme.Apply(next.Theme, next.CardTextSize, next.Accent);
+                settings.ApplyTheme();
+            };
             if (shot != null)
                 CaptureLater(settings, shot);
             Application.Run(settings);
@@ -180,6 +209,13 @@ static class Program
         }
 
         using var card = new OverlayForm();
+        config.StudyStyle = what switch
+        {
+            "detail" => "detail",
+            "words" => "word",
+            _ => "meaning",
+        };
+        card.ApplyOptions(config);
         card.ApplyTheme();
         var close = new System.Windows.Forms.Timer { Interval = 60000 };
         close.Tick += (_, _) => Application.ExitThread();
@@ -196,6 +232,12 @@ static class Program
                 card.BeginListening("考研", "请开始输入中文…  Esc 取消");
                 card.UpdateSource("我今天想去图书馆复习英语", Rectangle.Empty);
                 card.SetTranslating(true);
+                break;
+            case "stream":
+                card.BeginListening("考研", "请开始输入中文…  Esc 取消");
+                card.UpdateSource("虽然准备考研很辛苦，但我相信坚持下去一定会有收获。", Rectangle.Empty);
+                card.SetTranslating(true);
+                card.ShowPartial("虽然准备考研很辛苦，但我相信坚持下去一定会有收获。", "Arduous as preparation for the postgraduate entrance examination may be, I remain");
                 break;
             case "error":
                 card.BeginListening("考研", "请开始输入中文…  Esc 取消");
@@ -243,11 +285,21 @@ static class Program
             timer.Stop();
             try
             {
-                var margin = Theme.Scale(form, 20);
-                var bounds = Rectangle.Inflate(form.Bounds, margin, margin);
-                using var bitmap = new Bitmap(bounds.Width, bounds.Height);
+                // 直接让窗口画到位图上：屏幕截图在窗口被挡住、或者桌面在别的会话时是黑的。
+                using var bitmap = new Bitmap(form.Width, form.Height);
                 using (var g = Graphics.FromImage(bitmap))
-                    g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+                {
+                    var dc = g.GetHdc();
+                    try
+                    {
+                        PrintWindow(form.Handle, dc, PwRenderFullContent);
+                    }
+                    finally
+                    {
+                        g.ReleaseHdc(dc);
+                    }
+                }
+
                 bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
             }
             finally
@@ -259,6 +311,10 @@ static class Program
     }
 
     const int AttachParentProcess = -1;
+    const uint PwRenderFullContent = 2;
+
+    [DllImport("user32.dll")]
+    static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
 
     [DllImport("kernel32.dll")]
     static extern bool AttachConsole(int processId);
@@ -280,6 +336,15 @@ static class Program
             var failure = WordStudy.SelfTest() ?? CardSelfTest();
             Console.WriteLine(failure == null ? "ok" : "FAIL " + failure);
             return failure == null ? 0 : 1;
+        }
+
+        if (args.Length >= 1 && args[0] == "--selftest-speech")
+        {
+            // 只检查能不能找到英文语音，不出声。
+            _ = AttachConsole(AttachParentProcess);
+            Console.WriteLine(Speech.Available ? "ok" : "FAIL " + Speech.MissingHint);
+            Speech.Dispose();
+            return Speech.Available ? 0 : 1;
         }
 
         if (args.Length >= 1 && args[0] == "--hook-target")
@@ -383,9 +448,27 @@ static class Program
                 return 2;
             }
 
-            var translator = new Translator(AppConfig.Load());
-            var result = translator.TranslateAsync(args[1], CancellationToken.None).GetAwaiter().GetResult();
+            // 第三个参数可以临时换引擎：auto / openai / transmart / mymemory / google。
+            var probe = AppConfig.Load();
+            if (args.Length >= 3)
+                probe.Engine = args[2];
+            // 再往后是接口地址和模型，排查用，不改配置文件。
+            if (args.Length >= 5)
+            {
+                probe.OpenAiBaseUrl = args[3];
+                probe.OpenAiModel = args[4];
+            }
+            var translator = new Translator(probe.Normalize());
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            long first = 0;
+            var result = translator.TranslateAsync(args[1], CancellationToken.None, _ =>
+            {
+                if (first == 0)
+                    first = watch.ElapsedMilliseconds;
+            }).GetAwaiter().GetResult();
             Console.WriteLine(result.Ok ? result.Text : "ERROR " + result.Detail);
+            Console.WriteLine("engine=" + result.Detail + " first=" + (result.FirstMs > 0 ? result.FirstMs : first) + "ms total=" + watch.ElapsedMilliseconds + "ms"
+                + " words=" + (result.Words?.Count ?? 0));
             return result.Ok ? 0 : 1;
         }
 

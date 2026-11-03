@@ -3,7 +3,7 @@ using System.Drawing.Drawing2D;
 namespace InputTranslate;
 
 /// <summary>
-/// 卡片里的查词区：义项可以点选，选中后按这个意思改一句。
+/// 卡片里的查词区：浅灰圆角底，义项是一列可点的行，选中的打勾；选中后可以按这个意思改一句。
 /// </summary>
 sealed class WordGlossPanel : Panel
 {
@@ -11,12 +11,15 @@ sealed class WordGlossPanel : Panel
     readonly TextLabel _phonetic = new() { SingleLine = true };
     readonly TextLabel _banner = new();
     readonly TextLabel _note = new();
+    readonly TextLabel _tipLabel = new() { SingleLine = true };
     readonly TextLabel _tip = new();
     readonly TextLabel _rewrite = new();
+    readonly RoundButton _speak = new();
     readonly RoundButton _close = new();
     readonly RoundButton _rewriteButton = new();
     readonly RoundButton _adopt = new();
     readonly List<SenseChoice> _rows = new();
+    readonly List<int> _separators = new();
     WordGloss? _gloss;
     int _selected = -1;
     bool _rewriteBusy;
@@ -34,13 +37,23 @@ sealed class WordGlossPanel : Panel
 
         _close.Variant = ButtonVariant.Ghost;
         _close.Text = "收起";
+        _close.CornerRadius = 99;
+        _speak.Variant = ButtonVariant.Ghost;
+        _speak.Glyph = Glyphs.Speaker;
+        _speak.CornerRadius = 99;
         _rewriteButton.Text = "按这个意思改一句";
+        _rewriteButton.Variant = ButtonVariant.Link;
+        _rewriteButton.CornerRadius = 99;
         _adopt.Text = "采用这句";
         _adopt.Variant = ButtonVariant.Primary;
         _adopt.Glyph = Glyphs.Check;
+        _adopt.CornerRadius = 99;
+        _tipLabel.Text = "记忆点";
         _rewriteButton.Visible = false;
         _adopt.Visible = false;
+        _speak.Visible = Theme.Icons(9) != null;
         _close.Click += (_, _) => CloseClicked?.Invoke(this, EventArgs.Empty);
+        _speak.Click += (_, _) => SpeakClicked?.Invoke(this, EventArgs.Empty);
         _rewriteButton.Click += (_, _) =>
         {
             if (_rewriteBusy)
@@ -48,7 +61,7 @@ sealed class WordGlossPanel : Panel
             RewriteClicked?.Invoke(this, EventArgs.Empty);
         };
         _adopt.Click += (_, _) => AdoptClicked?.Invoke(this, EventArgs.Empty);
-        Controls.AddRange(new Control[] { _title, _phonetic, _banner, _note, _tip, _rewrite, _close, _rewriteButton, _adopt });
+        Controls.AddRange(new Control[] { _title, _phonetic, _speak, _banner, _note, _tipLabel, _tip, _rewrite, _close, _rewriteButton, _adopt });
         ApplyTheme();
     }
 
@@ -58,6 +71,7 @@ sealed class WordGlossPanel : Panel
         _gloss != null && _selected >= 0 && _selected < _gloss.Senses.Count ? _gloss.Senses[_selected] : null;
 
     public event EventHandler? CloseClicked;
+    public event EventHandler? SpeakClicked;
     public event EventHandler? RewriteClicked;
     public event EventHandler? AdoptClicked;
     public event EventHandler? SelectionChanged;
@@ -66,20 +80,23 @@ sealed class WordGlossPanel : Panel
     {
         var p = Theme.Current;
         BackColor = p.Surface;
-        _title.Font = Theme.CardLatin(11.5F, FontStyle.Bold);
+        _title.Font = Theme.CardLatin(12.5F, FontStyle.Bold);
         _title.ForeColor = p.Text;
         _phonetic.Font = Theme.CardLatin(9.5F);
         _phonetic.ForeColor = p.Muted;
-        _banner.Font = Theme.Card(8.5F);
+        _banner.Font = Theme.Card(8.75F);
         _banner.ForeColor = _loading ? p.Muted : p.Warning;
-        _note.Font = Theme.Card(9.5F);
+        _note.Font = Theme.Card(9.25F);
         _note.ForeColor = p.Body;
-        _tip.Font = Theme.Card(8.5F);
-        _tip.ForeColor = p.Muted;
+        _tipLabel.Font = Theme.Card(8.25F, FontStyle.Bold);
+        _tipLabel.ForeColor = p.Muted;
+        _tip.Font = Theme.Card(8.75F);
+        _tip.ForeColor = p.Body;
         _rewrite.Font = Theme.CardLatin(10.5F, FontStyle.Bold);
         _rewrite.ForeColor = _rewriteError ? p.Error : _rewriteBusy ? p.Muted : p.Text;
         foreach (var button in new[] { _close, _rewriteButton, _adopt })
-            button.Font = Theme.Card(8.5F);
+            button.Font = Theme.Card(8.75F);
+        _speak.Font = Theme.Card(9F);
         foreach (var row in _rows)
             row.Font = Theme.Card(9.5F);
         Invalidate(true);
@@ -132,7 +149,7 @@ sealed class WordGlossPanel : Panel
         _title.Text = head;
         _phonetic.Text = gloss.Phonetic;
         _banner.Text = gloss.Banner;
-        _tip.Text = gloss.Tip.Length == 0 ? "" : "记忆点：" + gloss.Tip;
+        _tip.Text = gloss.Tip;
         _note.Text = gloss.Senses.Count == 0 ? "" : gloss.Senses[_selected].Note;
         _rewriteButton.Visible = gloss.CanRewrite;
         for (var i = 0; i < gloss.Senses.Count; i++)
@@ -196,74 +213,95 @@ sealed class WordGlossPanel : Panel
 
     public int Arrange(int width, Func<int, int> scale)
     {
-        var pad = scale(12);
-        var gap = scale(6);
+        var pad = scale(14);
+        var gap = scale(8);
         var inner = Math.Max(40, width - pad * 2);
-        var closeWidth = _close.PreferredWidth(scale(8));
-        var closeHeight = scale(24);
+        _separators.Clear();
+
+        var closeWidth = _close.PreferredWidth(scale(10));
+        var buttonHeight = scale(26);
         _close.Visible = true;
-        _close.SetBounds(Math.Max(pad, width - pad - closeWidth + scale(4)), pad - scale(2), closeWidth, closeHeight);
+        _close.SetBounds(width - pad - closeWidth + scale(6), pad - scale(4), closeWidth, buttonHeight);
 
         var titleRoom = Math.Max(20, inner - closeWidth - scale(8));
         var titleSize = _title.Measure(titleRoom);
-        var titleHeight = Math.Max(titleSize.Height, closeHeight - scale(4));
-        _title.SetBounds(pad, pad, Math.Min(titleRoom, titleSize.Width + scale(2)), titleHeight);
-        var y = pad + titleHeight;
+        var titleHeight = Math.Max(titleSize.Height, buttonHeight - scale(6));
+        _title.SetBounds(pad, pad - scale(1), Math.Min(titleRoom, titleSize.Width + scale(2)), titleHeight);
+        var x = _title.Right + scale(8);
         if (_phonetic.Text.Length > 0)
         {
             var phoneticSize = _phonetic.Measure(titleRoom);
-            var besideX = pad + _title.Width + scale(8);
-            if (besideX + phoneticSize.Width <= pad + titleRoom)
+            _phonetic.Visible = x + phoneticSize.Width <= pad + titleRoom;
+            if (_phonetic.Visible)
             {
-                _phonetic.SetBounds(besideX, pad + (titleHeight - phoneticSize.Height) / 2 + scale(1), phoneticSize.Width + scale(2), phoneticSize.Height);
+                _phonetic.SetBounds(x, pad - scale(1) + (titleHeight - phoneticSize.Height) / 2 + scale(1), phoneticSize.Width + scale(2), phoneticSize.Height);
+                x = _phonetic.Right + scale(4);
             }
-            else
-            {
-                _phonetic.SetBounds(pad, y, titleRoom, phoneticSize.Height);
-                y += phoneticSize.Height;
-            }
-
-            _phonetic.Visible = true;
         }
         else
         {
             _phonetic.Visible = false;
         }
 
-        y = Math.Max(y, pad + closeHeight) + gap;
+        var speakSize = scale(24);
+        _speak.Visible = _speak.Glyph.Length > 0 && Theme.Icons(9) != null && !_loading && _title.Text.Length > 0
+            && x + speakSize <= pad + titleRoom;
+        if (_speak.Visible)
+            _speak.SetBounds(x, pad - scale(1) + (titleHeight - speakSize) / 2, speakSize, speakSize);
+
+        var y = pad + Math.Max(titleHeight, buttonHeight - scale(4)) + scale(6);
         y = PlaceWrapped(_banner, pad, y, inner, gap);
-        var rowHeight = scale(32);
-        foreach (var row in _rows)
-        {
-            row.SetBounds(pad, y, inner, rowHeight);
-            row.Visible = true;
-            y += rowHeight + scale(4);
-        }
 
         if (_rows.Count > 0)
-            y += scale(2);
-        y = PlaceWrapped(_note, pad, y, inner, gap);
-        y = PlaceWrapped(_tip, pad, y, inner, gap);
+        {
+            var rowHeight = scale(34);
+            _separators.Add(y);
+            foreach (var row in _rows)
+            {
+                row.SetBounds(pad - scale(6), y, inner + scale(12), rowHeight);
+                row.Visible = true;
+                y += rowHeight;
+                _separators.Add(y);
+            }
 
-        var x = pad;
+            y += scale(10);
+        }
+
+        y = PlaceWrapped(_note, pad, y, inner, gap);
+        if (_tip.Text.Length > 0)
+        {
+            var labelWidth = _tipLabel.Measure(inner).Width;
+            _tipLabel.Visible = true;
+            var tipHeight = _tip.Measure(inner - labelWidth - scale(8)).Height;
+            _tipLabel.SetBounds(pad, y + scale(1), labelWidth, Math.Min(tipHeight, _tip.Font.Height + scale(2)));
+            _tip.Visible = true;
+            _tip.SetBounds(pad + labelWidth + scale(8), y, inner - labelWidth - scale(8), tipHeight);
+            y += tipHeight + gap;
+        }
+        else
+        {
+            _tipLabel.Visible = false;
+            _tip.Visible = false;
+        }
+
+        var bx = pad - scale(8);
         var buttons = false;
-        var buttonHeight = scale(28);
         if (_rewriteButton.Visible)
         {
-            var buttonWidth = _rewriteButton.PreferredWidth(scale(12));
-            _rewriteButton.SetBounds(x, y, buttonWidth, buttonHeight);
-            x += buttonWidth + scale(8);
+            var w = _rewriteButton.PreferredWidth(scale(8));
+            _rewriteButton.SetBounds(bx, y, w, buttonHeight);
+            bx += w + scale(6);
             buttons = true;
         }
 
         if (_adopt.Visible)
         {
-            _adopt.SetBounds(x, y, _adopt.PreferredWidth(scale(12)), buttonHeight);
+            _adopt.SetBounds(bx, y, _adopt.PreferredWidth(scale(12)), buttonHeight);
             buttons = true;
         }
 
         if (buttons)
-            y += buttonHeight + gap;
+            y += buttonHeight + scale(4);
 
         y = PlaceWrapped(_rewrite, pad, y, inner, scale(2));
         return y + pad - gap / 2;
@@ -295,6 +333,7 @@ sealed class WordGlossPanel : Panel
         }
 
         _rows.Clear();
+        _separators.Clear();
     }
 
     static int PlaceWrapped(TextLabel label, int x, int y, int width, int gap)
@@ -318,14 +357,21 @@ sealed class WordGlossPanel : Panel
         g.Clear(Parent?.BackColor ?? p.Card);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var bounds = new Rectangle(0, 0, Width - 1, Height - 1);
-        using var path = Theme.RoundedRect(bounds, Theme.Scale(this, 10));
-        using var fill = new SolidBrush(p.Surface);
-        g.FillPath(fill, path);
-        using var pen = new Pen(p.SurfaceBorder);
-        g.DrawPath(pen, path);
+        using (var path = Theme.RoundedRect(bounds, Theme.Scale(this, 12)))
+        using (var fill = new SolidBrush(p.Surface))
+            g.FillPath(fill, path);
+
+        if (_separators.Count > 1)
+        {
+            using var pen = new Pen(p.Dark ? p.Separator : p.SurfaceBorder);
+            var pad = Theme.Scale(this, 14);
+            for (var i = 1; i < _separators.Count - 1; i++)
+                g.DrawLine(pen, pad, _separators[i], Width - pad, _separators[i]);
+        }
     }
 }
 
+/// <summary>一个义项：词性 + 中文；合这句的标「本句」，选中的打勾。</summary>
 sealed class SenseChoice : Control
 {
     bool _selected;
@@ -340,7 +386,7 @@ sealed class SenseChoice : Control
             true);
         Cursor = Cursors.Hand;
         TabStop = false;
-        Height = 32;
+        Height = 34;
     }
 
     public WordSense Sense { get; }
@@ -362,7 +408,7 @@ sealed class SenseChoice : Control
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
-        e.Graphics.Clear(Parent?.BackColor ?? Theme.Current.Surface);
+        e.Graphics.Clear(Theme.Current.Surface);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -370,49 +416,49 @@ sealed class SenseChoice : Control
         var p = Theme.Current;
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        var bounds = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
-        using (var path = Theme.RoundedRect(bounds, Theme.Scale(this, 8)))
+        if (_hover)
         {
-            using var fill = new SolidBrush(Selected ? p.Selected : _hover ? p.ButtonHover : p.Card);
+            var inset = Theme.Scale(this, 2);
+            using var path = Theme.RoundedRect(new Rectangle(0, inset, Width - 1, Height - inset * 2 - 1), Theme.Scale(this, 7));
+            using var fill = new SolidBrush(p.Dark ? p.FillHover : Theme.Mix(p.Surface, Color.Black, 0.04));
             g.FillPath(fill, path);
-            using var pen = new Pen(Selected ? p.Accent : p.ButtonBorder);
-            g.DrawPath(pen, path);
         }
 
-        var pad = Theme.Scale(this, 10);
-        var flags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+        var pad = Theme.Scale(this, 6);
+        var flags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
         var x = pad;
+        var posFont = Theme.CardLatin(Font.SizeInPoints / Theme.TextScale * 0.9f, FontStyle.Italic);
+        var posWidth = Theme.Scale(this, 30);
         if (Sense.Pos.Length > 0)
+            TextRenderer.DrawText(g, Sense.Pos, posFont, new Rectangle(x, 0, posWidth, Height), p.Muted, flags | TextFormatFlags.EndEllipsis);
+        x += posWidth;
+
+        var right = Width - pad;
+        if (Selected && Theme.Icons(9) is { } icons)
         {
-            var posFont = Theme.CardLatin(Font.SizeInPoints / Theme.TextScale * 0.92f, FontStyle.Italic);
-            var posWidth = TextRenderer.MeasureText(Sense.Pos, posFont, new Size(int.MaxValue, Height), flags | TextFormatFlags.NoPadding).Width;
-            TextRenderer.DrawText(g, Sense.Pos, posFont, new Rectangle(x, 0, posWidth + 2, Height), p.Muted, flags | TextFormatFlags.NoPadding);
-            x += posWidth + Theme.Scale(this, 8);
+            var size = Theme.Scale(this, 16);
+            TextRenderer.DrawText(g, Glyphs.Check, icons, new Rectangle(right - size, 0, size, Height), p.Accent,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            right -= size + Theme.Scale(this, 6);
         }
 
-        var badgeWidth = 0;
         if (Sense.Fits)
         {
-            var badgeFont = Theme.Card(Font.SizeInPoints / Theme.TextScale * 0.82f, FontStyle.Bold);
+            var badgeFont = Theme.Card(Font.SizeInPoints / Theme.TextScale * 0.8f, FontStyle.Bold);
             var size = TextRenderer.MeasureText("本句", badgeFont, new Size(int.MaxValue, Height), TextFormatFlags.NoPadding);
             var bw = size.Width + Theme.Scale(this, 12);
             var bh = size.Height + Theme.Scale(this, 4);
-            var badge = new Rectangle(Width - pad - bw, (Height - bh) / 2, bw, bh);
+            var badge = new Rectangle(right - bw, (Height - bh) / 2, bw, bh);
             using (var path = Theme.RoundedRect(badge, bh / 2))
             using (var fill = new SolidBrush(p.AccentSoft))
                 g.FillPath(fill, path);
             TextRenderer.DrawText(g, "本句", badgeFont, badge, p.Accent,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
-            badgeWidth = bw + Theme.Scale(this, 8);
+            right = badge.Left - Theme.Scale(this, 8);
         }
 
-        TextRenderer.DrawText(
-            g,
-            Sense.Chinese,
-            Font,
-            new Rectangle(x, 0, Math.Max(10, Width - x - pad - badgeWidth), Height),
-            p.Text,
-            flags | TextFormatFlags.EndEllipsis);
+        TextRenderer.DrawText(g, Sense.Chinese, Font, new Rectangle(x, 0, Math.Max(10, right - x), Height),
+            Selected ? p.Accent : p.Text, flags | TextFormatFlags.EndEllipsis);
     }
 
     protected override void OnMouseEnter(EventArgs e)

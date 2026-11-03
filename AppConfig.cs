@@ -11,7 +11,7 @@ sealed class AppConfig
     /// <summary>是否注册全局热键。关掉后仍可以从托盘菜单开始。</summary>
     public bool Enabled { get; set; } = true;
 
-    /// <summary>auto（配置了大模型接口就用它，否则 MyMemory → Google）、openai、mymemory、google。</summary>
+    /// <summary>auto（配置了大模型接口就用它，否则用免费引擎）、openai、transmart、mymemory、google。</summary>
     public string Engine { get; set; } = "auto";
 
     public string OpenAiBaseUrl { get; set; } = "";
@@ -24,7 +24,9 @@ sealed class AppConfig
     public string OpenAiApiKeyProtected { get; set; } = "";
 
     public string OpenAiModel { get; set; } = "";
-    public int PauseMs { get; set; } = 800;
+
+    /// <summary>输完停顿多久开始翻译。快 350 / 适中 600 / 稳 1000。</summary>
+    public int PauseMs { get; set; } = 600;
     public bool ChineseOnly { get; set; } = true;
     public bool AutoCopy { get; set; }
     public bool AutoWrite { get; set; }
@@ -43,6 +45,45 @@ sealed class AppConfig
 
     /// <summary>small、normal 或 large。</summary>
     public string CardTextSize { get; set; } = "normal";
+
+    /// <summary>强调色：blue、purple、pink、orange、green、graphite。</summary>
+    public string Accent { get; set; } = "blue";
+
+    /// <summary>大模型逐字显示译文（流式输出），第一个词通常不到一秒就出来。</summary>
+    public bool StreamOutput { get; set; } = true;
+
+    /// <summary>对支持的服务关闭「深度思考」，翻译快很多。</summary>
+    public bool FastThinking { get; set; } = true;
+
+    /// <summary>卡片上显示中文原文。</summary>
+    public bool ShowSource { get; set; } = true;
+
+    /// <summary>卡片上显示操作提示（Enter 完成 · Esc 取消 等）。</summary>
+    public bool ShowHints { get; set; } = true;
+
+    /// <summary>卡片上显示译文来源（模型名、引擎）。</summary>
+    public bool ShowEngine { get; set; } = true;
+
+    /// <summary>重点词怎么显示：word（只有单词）、meaning（单词 + 中文释义）、detail（再加一句说明）。</summary>
+    public string StudyStyle { get; set; } = "meaning";
+
+    /// <summary>点英文里的单词查释义。</summary>
+    public bool ClickLookup { get; set; } = true;
+
+    /// <summary>卡片上显示朗读按钮。</summary>
+    public bool ShowSpeak { get; set; } = true;
+
+    /// <summary>查词时自动读一遍单词。</summary>
+    public bool SpeakOnLookup { get; set; }
+
+    /// <summary>朗读语速：slow、normal、fast。用 Windows 自带的英文语音。</summary>
+    public string SpeakSpeed { get; set; } = "normal";
+
+    /// <summary>卡片位置：input（跟着输入框）、top（屏幕顶部）、bottom（屏幕底部）。</summary>
+    public string CardPosition { get; set; } = "input";
+
+    /// <summary>按 Enter 完成后几秒自动收起卡片，0 表示不收起。</summary>
+    public int AutoHideSeconds { get; set; }
 
     public static string Directory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "InputTranslate");
@@ -120,11 +161,16 @@ sealed class AppConfig
     /// <summary>把手改出错的值拉回到能用的范围。</summary>
     public AppConfig Normalize()
     {
-        Engine = Pick(Engine, "auto", "auto", "openai", "mymemory", "google");
+        Engine = Pick(Engine, "auto", "auto", "openai", "transmart", "mymemory", "google");
         EnglishLevel = Pick(EnglishLevel, "kaoyan", "kaoyan", "cet6", "plain");
         Theme = Pick(Theme, "system", "system", "dark", "light");
         CardTextSize = Pick(CardTextSize, "normal", "small", "normal", "large");
-        PauseMs = Math.Clamp(PauseMs, 300, 3000);
+        Accent = Pick(Accent, "blue", "blue", "purple", "pink", "orange", "green", "graphite");
+        StudyStyle = Pick(StudyStyle, "meaning", "word", "meaning", "detail");
+        SpeakSpeed = Pick(SpeakSpeed, "normal", "slow", "normal", "fast");
+        CardPosition = Pick(CardPosition, "input", "input", "top", "bottom");
+        AutoHideSeconds = AutoHideSeconds <= 0 ? 0 : Math.Clamp(AutoHideSeconds, 3, 120);
+        PauseMs = Math.Clamp(PauseMs, 200, 3000);
         OpenAiBaseUrl = (OpenAiBaseUrl ?? "").Trim();
         OpenAiApiKey = (OpenAiApiKey ?? "").Trim();
         OpenAiApiKeyProtected = (OpenAiApiKeyProtected ?? "").Trim();

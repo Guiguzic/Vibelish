@@ -54,13 +54,11 @@
     </Reference>
     <!-- UIAutomationTypes P/Invokes PresentationNative_cor3.dll. It exists in the
          desktop shared framework but is not part of a WinForms self-contained app. -->
-    <None Include="$(UiaRuntimeDir)\PresentationNative_cor3.dll" Link="PresentationNative_cor3.dll"
-          Condition="Exists('$(UiaRuntimeDir)\PresentationNative_cor3.dll')">
+    <None Include="$(UiaRuntimeDir)\PresentationNative_cor3.dll" Link="PresentationNative_cor3.dll" Condition="Exists('$(UiaRuntimeDir)\PresentationNative_cor3.dll')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
-    <None Include="$(UiaRuntimeDir)\vcruntime140_cor3.dll" Link="vcruntime140_cor3.dll"
-          Condition="Exists('$(UiaRuntimeDir)\vcruntime140_cor3.dll')">
+    <None Include="$(UiaRuntimeDir)\vcruntime140_cor3.dll" Link="vcruntime140_cor3.dll" Condition="Exists('$(UiaRuntimeDir)\vcruntime140_cor3.dll')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
@@ -71,5 +69,8 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Speech" Version="9.0.0" />
   </ItemGroup>
 </Project>

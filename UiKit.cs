@@ -5,23 +5,29 @@ namespace InputTranslate;
 
 // 这个文件同时编进安装程序（.NET Framework 4.8），不要用 Index/Range、Math.Clamp 之类的新 API。
 
-/// <summary>一套卡片配色。深色和浅色各一份，控件在绘制时读取 <see cref="Theme.Current"/>。</summary>
+/// <summary>一套配色。深色和浅色各一份，强调色可换；控件在绘制时读取 <see cref="Theme.Current"/>。</summary>
 sealed class Palette
 {
     public bool Dark { get; set; }
+
+    // 卡片
     public Color Card { get; set; }
     public Color CardBorder { get; set; }
     public Color Surface { get; set; }
     public Color SurfaceBorder { get; set; }
+
+    // 文字：主要 → 正文 → 次要 → 最淡
     public Color Text { get; set; }
     public Color Body { get; set; }
     public Color Muted { get; set; }
     public Color Dim { get; set; }
+
     public Color Accent { get; set; }
     public Color AccentSoft { get; set; }
     public Color Success { get; set; }
     public Color Warning { get; set; }
     public Color Error { get; set; }
+
     public Color ButtonBack { get; set; }
     public Color ButtonHover { get; set; }
     public Color ButtonPressed { get; set; }
@@ -33,97 +39,160 @@ sealed class Palette
     public Color PrimaryText { get; set; }
     public Color DangerHover { get; set; }
     public Color Selected { get; set; }
+
+    // 设置窗口
+    public Color Window { get; set; }
+    public Color Sidebar { get; set; }
+    public Color Group { get; set; }
+    public Color Separator { get; set; }
+    public Color Fill { get; set; }
+    public Color FillHover { get; set; }
+    public Color Field { get; set; }
+    public Color FieldBorder { get; set; }
+    public Color SwitchOff { get; set; }
+    public Color Knob { get; set; }
+
+    public Palette Clone() => (Palette)MemberwiseClone();
 }
 
 static class Theme
 {
-    public static readonly Palette DarkPalette = new()
+    public static readonly Palette DarkPalette = new Palette
     {
         Dark = true,
-        Card = Color.FromArgb(22, 27, 38),
-        CardBorder = Color.FromArgb(52, 63, 84),
-        Surface = Color.FromArgb(30, 37, 51),
-        SurfaceBorder = Color.FromArgb(55, 67, 89),
-        Text = Color.FromArgb(243, 246, 250),
-        Body = Color.FromArgb(203, 213, 225),
-        Muted = Color.FromArgb(148, 163, 184),
-        Dim = Color.FromArgb(118, 132, 155),
-        Accent = Color.FromArgb(77, 171, 247),
-        AccentSoft = Color.FromArgb(40, 77, 171, 247),
-        Success = Color.FromArgb(74, 222, 128),
-        Warning = Color.FromArgb(251, 191, 36),
-        Error = Color.FromArgb(248, 113, 113),
-        ButtonBack = Color.FromArgb(38, 46, 62),
-        ButtonHover = Color.FromArgb(50, 60, 80),
-        ButtonPressed = Color.FromArgb(31, 38, 52),
-        ButtonBorder = Color.FromArgb(58, 70, 92),
-        ButtonText = Color.FromArgb(226, 232, 240),
-        PrimaryBack = Color.FromArgb(37, 128, 235),
-        PrimaryHover = Color.FromArgb(56, 145, 245),
-        PrimaryPressed = Color.FromArgb(29, 108, 204),
+        Card = Color.FromArgb(30, 30, 32),
+        CardBorder = Color.FromArgb(58, 58, 61),
+        Surface = Color.FromArgb(44, 44, 46),
+        SurfaceBorder = Color.FromArgb(58, 58, 60),
+        Text = Color.FromArgb(245, 245, 247),
+        Body = Color.FromArgb(209, 209, 214),
+        Muted = Color.FromArgb(152, 152, 157),
+        Dim = Color.FromArgb(108, 108, 112),
+        Success = Color.FromArgb(48, 209, 88),
+        Warning = Color.FromArgb(255, 179, 64),
+        Error = Color.FromArgb(255, 105, 97),
+        ButtonBack = Color.FromArgb(50, 50, 53),
+        ButtonHover = Color.FromArgb(62, 62, 66),
+        ButtonPressed = Color.FromArgb(42, 42, 45),
+        ButtonBorder = Color.FromArgb(50, 50, 53),
+        ButtonText = Color.FromArgb(235, 235, 240),
         PrimaryText = Color.White,
-        DangerHover = Color.FromArgb(127, 29, 29),
-        Selected = Color.FromArgb(33, 58, 92),
+        DangerHover = Color.FromArgb(80, 36, 36),
+        Window = Color.FromArgb(28, 28, 30),
+        Sidebar = Color.FromArgb(36, 36, 38),
+        Group = Color.FromArgb(44, 44, 46),
+        Separator = Color.FromArgb(58, 58, 60),
+        Fill = Color.FromArgb(50, 50, 53),
+        FillHover = Color.FromArgb(62, 62, 66),
+        Field = Color.FromArgb(30, 30, 32),
+        FieldBorder = Color.FromArgb(72, 72, 74),
+        SwitchOff = Color.FromArgb(72, 72, 76),
+        Knob = Color.White,
     };
 
-    public static readonly Palette LightPalette = new()
+    public static readonly Palette LightPalette = new Palette
     {
         Dark = false,
-        Card = Color.FromArgb(255, 255, 255),
-        CardBorder = Color.FromArgb(214, 221, 231),
-        Surface = Color.FromArgb(244, 247, 251),
-        SurfaceBorder = Color.FromArgb(222, 228, 237),
-        Text = Color.FromArgb(17, 24, 39),
-        Body = Color.FromArgb(55, 65, 81),
-        Muted = Color.FromArgb(100, 112, 130),
-        Dim = Color.FromArgb(120, 131, 148),
-        Accent = Color.FromArgb(29, 112, 214),
-        AccentSoft = Color.FromArgb(32, 29, 112, 214),
-        Success = Color.FromArgb(22, 163, 74),
-        Warning = Color.FromArgb(202, 138, 4),
-        Error = Color.FromArgb(220, 38, 38),
-        ButtonBack = Color.FromArgb(255, 255, 255),
-        ButtonHover = Color.FromArgb(241, 245, 249),
-        ButtonPressed = Color.FromArgb(226, 232, 240),
-        ButtonBorder = Color.FromArgb(203, 213, 225),
-        ButtonText = Color.FromArgb(30, 41, 59),
-        PrimaryBack = Color.FromArgb(29, 112, 214),
-        PrimaryHover = Color.FromArgb(24, 98, 192),
-        PrimaryPressed = Color.FromArgb(20, 84, 166),
+        Card = Color.White,
+        CardBorder = Color.FromArgb(222, 222, 227),
+        Surface = Color.FromArgb(245, 245, 247),
+        SurfaceBorder = Color.FromArgb(232, 232, 237),
+        Text = Color.FromArgb(29, 29, 31),
+        Body = Color.FromArgb(58, 58, 60),
+        Muted = Color.FromArgb(110, 110, 115),
+        Dim = Color.FromArgb(161, 161, 166),
+        Success = Color.FromArgb(36, 138, 61),
+        Warning = Color.FromArgb(178, 106, 0),
+        Error = Color.FromArgb(215, 44, 36),
+        ButtonBack = Color.FromArgb(240, 240, 243),
+        ButtonHover = Color.FromArgb(229, 229, 234),
+        ButtonPressed = Color.FromArgb(216, 216, 222),
+        ButtonBorder = Color.FromArgb(240, 240, 243),
+        ButtonText = Color.FromArgb(29, 29, 31),
         PrimaryText = Color.White,
-        DangerHover = Color.FromArgb(254, 226, 226),
-        Selected = Color.FromArgb(225, 238, 253),
+        DangerHover = Color.FromArgb(253, 231, 231),
+        Window = Color.FromArgb(245, 245, 247),
+        Sidebar = Color.FromArgb(236, 236, 240),
+        Group = Color.White,
+        Separator = Color.FromArgb(229, 229, 234),
+        Fill = Color.FromArgb(240, 240, 243),
+        FillHover = Color.FromArgb(229, 229, 234),
+        Field = Color.White,
+        FieldBorder = Color.FromArgb(210, 210, 215),
+        SwitchOff = Color.FromArgb(220, 220, 225),
+        Knob = Color.White,
     };
+
+    /// <summary>可选的强调色（浅色 / 深色模式下各一个）。</summary>
+    public static readonly string[] AccentKeys = { "blue", "purple", "pink", "orange", "green", "graphite" };
+
+    static Theme()
+    {
+        WithAccent(LightPalette, "blue");
+        WithAccent(DarkPalette, "blue");
+    }
 
     static Palette _current = DarkPalette;
     static float _textScale = 1f;
+    static string _accent = "blue";
     static readonly Dictionary<string, Font> Fonts = new Dictionary<string, Font>();
+    static HashSet<string>? _families;
     static string? _iconFamily;
 
     public static Palette Current => _current;
+
+    public static string AccentKey => _accent;
 
     /// <summary>卡片文字缩放（较小 / 标准 / 较大）。</summary>
     public static float TextScale => _textScale;
 
     public const string CjkFamily = "Microsoft YaHei UI";
-    public const string LatinFamily = "Segoe UI";
 
     /// <param name="mode">system、dark 或 light。</param>
     /// <param name="textSize">small、normal 或 large。</param>
-    public static void Apply(string? mode, string? textSize)
+    /// <param name="accent">见 <see cref="AccentKeys"/>。</param>
+    public static void Apply(string? mode, string? textSize, string? accent = null)
     {
-        _current = (mode ?? "").ToLowerInvariant() switch
+        var dark = (mode ?? "").ToLowerInvariant() switch
         {
-            "light" => LightPalette,
-            "dark" => DarkPalette,
-            _ => SystemUsesLightTheme() ? LightPalette : DarkPalette,
+            "light" => false,
+            "dark" => true,
+            _ => !SystemUsesLightTheme(),
         };
+        _accent = Array.IndexOf(AccentKeys, (accent ?? "").ToLowerInvariant()) >= 0 ? accent!.ToLowerInvariant() : "blue";
+        _current = WithAccent((dark ? DarkPalette : LightPalette).Clone(), _accent);
         _textScale = (textSize ?? "").ToLowerInvariant() switch
         {
             "small" => 0.9f,
             "large" => 1.15f,
             _ => 1f,
         };
+    }
+
+    /// <summary>强调色本身（设置页的色块用）。</summary>
+    public static Color AccentColor(string key, bool dark)
+    {
+        switch (key)
+        {
+            case "purple": return dark ? Color.FromArgb(191, 90, 242) : Color.FromArgb(162, 72, 214);
+            case "pink": return dark ? Color.FromArgb(255, 55, 95) : Color.FromArgb(232, 38, 84);
+            case "orange": return dark ? Color.FromArgb(255, 159, 10) : Color.FromArgb(232, 121, 0);
+            case "green": return dark ? Color.FromArgb(48, 209, 88) : Color.FromArgb(40, 160, 72);
+            case "graphite": return dark ? Color.FromArgb(152, 152, 157) : Color.FromArgb(120, 120, 126);
+            default: return dark ? Color.FromArgb(10, 132, 255) : Color.FromArgb(0, 113, 227);
+        }
+    }
+
+    static Palette WithAccent(Palette p, string key)
+    {
+        var accent = AccentColor(key, p.Dark);
+        p.Accent = accent;
+        p.AccentSoft = Color.FromArgb(p.Dark ? 60 : 34, accent);
+        p.PrimaryBack = accent;
+        p.PrimaryHover = p.Dark ? Mix(accent, Color.White, 0.12) : Mix(accent, Color.Black, 0.08);
+        p.PrimaryPressed = Mix(accent, Color.Black, p.Dark ? 0.12 : 0.18);
+        p.Selected = Blend(Color.FromArgb(p.Dark ? 70 : 30, accent), p.Card);
+        return p;
     }
 
     public static bool SystemUsesLightTheme()
@@ -143,45 +212,56 @@ static class Theme
     /// <summary>界面字体（中文）。同样的字号和样式只创建一次，程序退出前不释放。</summary>
     public static Font Ui(float size, FontStyle style = FontStyle.Regular) => Get(CjkFamily, size, style);
 
-    /// <summary>英文正文字体。</summary>
-    public static Font Latin(float size, FontStyle style = FontStyle.Regular) => Get(LatinFamily, size, style);
+    /// <summary>英文正文字体：Windows 11 用 Segoe UI Variable，Windows 10 用 Segoe UI。</summary>
+    public static Font Latin(float size, FontStyle style = FontStyle.Regular) =>
+        Get(Has("Segoe UI Variable Text") ? "Segoe UI Variable Text" : "Segoe UI", size, style);
+
+    /// <summary>大号英文标题字体（半粗）。</summary>
+    public static Font Display(float size)
+    {
+        if (Has("Segoe UI Variable Display Semib"))
+            return Get("Segoe UI Variable Display Semib", size, FontStyle.Regular);
+        if (Has("Segoe UI Semibold"))
+            return Get("Segoe UI Semibold", size, FontStyle.Regular);
+        return Get("Segoe UI", size, FontStyle.Bold);
+    }
 
     /// <summary>卡片上的字体，跟随「文字大小」设置。</summary>
     public static Font Card(float size, FontStyle style = FontStyle.Regular) => Ui(size * _textScale, style);
 
     public static Font CardLatin(float size, FontStyle style = FontStyle.Regular) => Latin(size * _textScale, style);
 
-    /// <summary>卡片上的英文译文：Segoe UI Semibold，比 Bold 清爽。</summary>
-    public static Font CardEnglish(float size) => Get("Segoe UI Semibold", size * _textScale, FontStyle.Regular);
+    /// <summary>卡片上的英文译文。</summary>
+    public static Font CardEnglish(float size) => Display(size * _textScale);
 
     /// <summary>Segoe Fluent Icons（Windows 11）或 Segoe MDL2 Assets（Windows 10）里的图标字体。</summary>
     public static Font? Icons(float size)
     {
         if (_iconFamily == null)
+            _iconFamily = Has("Segoe Fluent Icons") ? "Segoe Fluent Icons" : Has("Segoe MDL2 Assets") ? "Segoe MDL2 Assets" : "";
+        return _iconFamily.Length == 0 ? null : Get(_iconFamily, size, FontStyle.Regular);
+    }
+
+    static bool Has(string family)
+    {
+        if (_families == null)
         {
-            _iconFamily = "";
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 using var installed = new InstalledFontCollection();
-                foreach (var family in installed.Families)
-                {
-                    if (family.Name == "Segoe Fluent Icons")
-                    {
-                        _iconFamily = family.Name;
-                        break;
-                    }
-
-                    if (family.Name == "Segoe MDL2 Assets")
-                        _iconFamily = family.Name;
-                }
+                foreach (var item in installed.Families)
+                    names.Add(item.Name);
             }
             catch
             {
-                _iconFamily = "";
+                // 读不到字体列表就全用默认字体。
             }
+
+            _families = names;
         }
 
-        return _iconFamily.Length == 0 ? null : Get(_iconFamily, size, FontStyle.Regular);
+        return _families.Contains(family);
     }
 
     static Font Get(string family, float size, FontStyle style)
@@ -223,6 +303,14 @@ static class Theme
             (int)Math.Round(top.G * a + bottom.G * (1 - a)),
             (int)Math.Round(top.B * a + bottom.B * (1 - a)));
     }
+
+    /// <summary>把 a 往 b 混 amount（0–1）。</summary>
+    public static Color Mix(Color a, Color b, double amount) => Color.FromArgb(
+        (int)Math.Round(a.R + (b.R - a.R) * amount),
+        (int)Math.Round(a.G + (b.G - a.G) * amount),
+        (int)Math.Round(a.B + (b.B - a.B) * amount));
+
+    public static int ColorRef(Color c) => c.R | (c.G << 8) | (c.B << 16);
 }
 
 /// <summary>常用的 Segoe Fluent Icons / MDL2 码位。</summary>
@@ -235,6 +323,17 @@ static class Glyphs
     public const string Refresh = "";
     public const string Check = "";
     public const string Speaker = "";
+    public const string ChevronDown = "";
+    public const string ChevronRight = "";
+    public const string View = "";
+    public const string Globe = "";
+    public const string Bolt = "";
+    public const string ColorPalette = "";
+    public const string Dictionary = "";
+    public const string Info = "";
+    public const string Keyboard = "";
+    public const string Folder = "";
+    public const string Document = "";
 }
 
 /// <summary>量和画用同一套 NoPadding 规则的文字。Label 画的时候自带左右内边距，
@@ -290,10 +389,20 @@ sealed class TextLabel : Control
 
 enum ButtonVariant
 {
+    /// <summary>浅灰底，没有边框。</summary>
     Secondary,
+
+    /// <summary>强调色底，白字。</summary>
     Primary,
+
+    /// <summary>没有底色，悬停时才出现浅灰底。</summary>
     Ghost,
+
+    /// <summary>像 Ghost，悬停时变红（关闭按钮）。</summary>
     Danger,
+
+    /// <summary>强调色文字，像链接。</summary>
+    Link,
 }
 
 /// <summary>圆角按钮。颜色默认取当前主题，也可以给一份固定配色（安装程序用浅色）。</summary>
@@ -317,6 +426,7 @@ sealed class RoundButton : Button
         UseMnemonic = false;
     }
 
+    /// <summary>圆角半径；给一个很大的值就是胶囊形。</summary>
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public int CornerRadius { get; set; } = 8;
 
@@ -331,6 +441,10 @@ sealed class RoundButton : Button
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public string Glyph { get; set; } = "";
 
+    /// <summary>底色以外的背景（父控件画的颜色）。为空时取父控件的 BackColor。</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public Color Backdrop { get; set; } = Color.Empty;
+
     /// <summary>按文字和图标算出合适的宽度。</summary>
     public int PreferredWidth(int padding)
     {
@@ -343,14 +457,14 @@ sealed class RoundButton : Button
         return text + icon + gap + padding * 2;
     }
 
-    Font? GlyphFont() => Glyph.Length == 0 ? null : Theme.Icons(Font.SizeInPoints * 0.95f);
+    Font? GlyphFont() => Glyph.Length == 0 ? null : Theme.Icons(Font.SizeInPoints * (string.IsNullOrEmpty(Text) ? 1.05f : 0.95f));
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var p = PaletteOverride ?? Theme.Current;
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        var parentBack = Parent?.BackColor ?? p.Card;
+        var parentBack = !Backdrop.IsEmpty ? Backdrop : Parent?.BackColor ?? p.Card;
         if (parentBack.A < 255)
             parentBack = p.Card;
         g.Clear(parentBack);
@@ -375,9 +489,14 @@ sealed class RoundButton : Button
                 border = back;
                 text = _hover ? p.Error : p.Muted;
                 break;
+            case ButtonVariant.Link:
+                back = _pressed ? p.ButtonPressed : _hover ? Theme.Blend(p.AccentSoft, parentBack) : parentBack;
+                border = back;
+                text = _pressed ? p.PrimaryPressed : p.Accent;
+                break;
             default:
                 back = _pressed ? p.ButtonPressed : _hover ? p.ButtonHover : p.ButtonBack;
-                border = _hover ? p.Accent : p.ButtonBorder;
+                border = p.ButtonBorder;
                 text = p.ButtonText;
                 break;
         }
@@ -388,15 +507,19 @@ sealed class RoundButton : Button
             if (Variant == ButtonVariant.Primary)
             {
                 back = p.ButtonBack;
-                border = p.ButtonBorder;
+                border = p.ButtonBack;
             }
         }
 
         var bounds = new Rectangle(0, 0, Width - 1, Height - 1);
         using (var path = Theme.RoundedRect(bounds, Theme.Scale(this, CornerRadius)))
         {
-            using var fill = new SolidBrush(back);
-            g.FillPath(fill, path);
+            if (back != parentBack)
+            {
+                using var fill = new SolidBrush(back);
+                g.FillPath(fill, path);
+            }
+
             if (border != back)
             {
                 using var pen = new Pen(border);

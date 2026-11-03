@@ -11,6 +11,8 @@ sealed class TrayApplicationContext : ApplicationContext
     readonly NotifyIcon _icon;
     readonly System.Windows.Forms.Timer _timer = new() { Interval = 60 };
     readonly System.Windows.Forms.Timer _idleTimer = new() { Interval = 9000 };
+    readonly System.Windows.Forms.Timer _hideTimer = new();
+    readonly ContextMenuStrip _menu;
     readonly Icon _appIcon;
     readonly Icon _listeningIcon;
     readonly Translator _translator;
@@ -57,7 +59,8 @@ sealed class TrayApplicationContext : ApplicationContext
     {
         StartupRegistration.Refresh();
         _config = AppConfig.Load();
-        Theme.Apply(_config.Theme, _config.CardTextSize);
+        Theme.Apply(_config.Theme, _config.CardTextSize, _config.Accent);
+        _overlay.ApplyOptions(_config);
         _overlay.ApplyTheme();
         _ = _overlay.Handle; // 先建好窗口句柄，后台线程和键盘钩子靠它切回 UI 线程。
         _translator = new Translator(_config);
@@ -69,11 +72,8 @@ sealed class TrayApplicationContext : ApplicationContext
         _showThread = new Thread(ShowLoop) { IsBackground = true, Name = "InputTranslate.ShowEvent" };
         _showThread.Start();
 
-        var menu = new ContextMenuStrip
-        {
-            Font = Theme.Ui(9F),
-            Renderer = new ToolStripProfessionalRenderer(new MenuColors()) { RoundedEdges = false },
-        };
+        var menu = ThemedMenu.Create();
+        _menu = menu;
         _toggleItem = new ToolStripMenuItem("开始翻译", null, (_, _) => BeginOnUi(ToggleSession))
         {
             Font = Theme.Ui(9F, FontStyle.Bold),
@@ -92,9 +92,11 @@ sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(_startupItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("退出", null, (_, _) => ExitThread()));
-        foreach (ToolStripItem item in menu.Items)
-            item.Padding = new Padding(item.Padding.Left, 3, item.Padding.Right, 3);
-        menu.Opening += (_, _) => RefreshMenu();
+        menu.Opening += (_, _) =>
+        {
+            RefreshMenu();
+            ThemeMenu();
+        };
 
         _icon = new NotifyIcon
         {
@@ -116,6 +118,8 @@ sealed class TrayApplicationContext : ApplicationContext
 
         _overlay.CopyRequested += (_, _) => CopyEnglish();
         _overlay.WriteRequested += (_, _) => WriteEnglish();
+        _overlay.SpeakRequested += (_, _) => Speak(_overlay.EnglishText);
+        _overlay.SpeakWordRequested += word => Speak(word);
         _overlay.WordClicked += OnWordClicked;
         _overlay.RewriteRequested += (_, _) => _ = RewriteWordAsync();
         _overlay.AdoptRequested += (_, _) => AdoptRewrite();
@@ -138,6 +142,20 @@ sealed class TrayApplicationContext : ApplicationContext
             if (_overlay.Visible && _overlay.Bounds.Contains(Cursor.Position))
             {
                 _idleTimer.Start();
+                return;
+            }
+
+            _overlay.Hide();
+        };
+        _hideTimer.Tick += (_, _) =>
+        {
+            _hideTimer.Stop();
+            if (_capturing || _translating)
+                return;
+            // 鼠标停在卡片上、或者正在看释义，就再等一轮。
+            if (_overlay.PointerOver || _overlay.GlossOpen)
+            {
+                _hideTimer.Start();
                 return;
             }
 
@@ -369,8 +387,21 @@ sealed class TrayApplicationContext : ApplicationContext
         _nextFieldRead = 0;
         _textChangedAt = Environment.TickCount64;
         _idleTimer.Stop();
+        _hideTimer.Stop();
         _overlay.BeginListening(EngineBadge(), "请开始输入中文…  Esc 取消");
         UpdateTrayState();
+        // 趁用户还在打字，先把到翻译服务的连接建好，第一句就不用等握手。
+        _translator.WarmUp();
+    }
+
+    /// <summary>按 Enter 完成以后，过几秒自动收起卡片（设置里可关）。</summary>
+    void ScheduleAutoHide()
+    {
+        _hideTimer.Stop();
+        if (_config.AutoHideSeconds <= 0)
+            return;
+        _hideTimer.Interval = _config.AutoHideSeconds * 1000;
+        _hideTimer.Start();
     }
 
     /// <param name="cancel">Esc / 关闭按钮：丢掉本次，隐藏卡片。回车：把这句翻完，卡片留着方便复制。</param>
@@ -413,6 +444,7 @@ sealed class TrayApplicationContext : ApplicationContext
         }
 
         _overlay.FinishSession();
+        ScheduleAutoHide();
     }
 
     string EngineBadge() => _config.UsesChatForTranslation
@@ -421,6 +453,7 @@ sealed class TrayApplicationContext : ApplicationContext
         {
             "google" => "Google",
             "mymemory" => "MyMemory",
+            "transmart" => "腾讯交互翻译",
             _ => "免费引擎",
         };
 
@@ -464,9 +497,20 @@ sealed class TrayApplicationContext : ApplicationContext
         _translating = true;
         _translatedFor = sentence;
         _overlay.SetTranslating(true);
+        // 逐字输出：后台线程收到一段就排到 UI 线程，过期的（已经换了一句）直接丢掉。
+        Action<string>? partial = null;
+        if (_config.StreamOutput)
+        {
+            partial = text => Dispatch(() =>
+            {
+                if (!token.IsCancellationRequested && generation == _translateGeneration && _translating)
+                    _overlay.ShowPartial(sentence, text);
+            });
+        }
+
         try
         {
-            var result = await _translator.TranslateAsync(sentence, token);
+            var result = await _translator.TranslateAsync(sentence, token, partial);
             if (token.IsCancellationRequested || generation != _translateGeneration)
                 return;
             if (!result.Ok)
@@ -483,11 +527,14 @@ sealed class TrayApplicationContext : ApplicationContext
             _failedFor = "";
             _failCount = 0;
             _doneChinese = sentence;
-            TraceLog.Note("translate ok " + TraceLog.Safe(result.Detail) + " chars=" + result.Text.Length);
+            TraceLog.Note("translate ok " + TraceLog.Safe(result.Detail) + " chars=" + result.Text.Length
+                + " first=" + result.FirstMs + "ms total=" + result.TotalMs + "ms");
             _overlay.ShowTranslation(sentence, result.Text, result.Detail);
             AddRecent(sentence, result.Text);
             ApplyTranslation(result.Text);
-            if (_config.StudyWords && _config.HasChatApi)
+            if (result.Words is { Count: > 0 } words)
+                _overlay.ShowStudy(words); // 和译文同一次请求带回来的，不用再等。
+            else if (_config.StudyWords && _config.HasChatApi)
                 _ = StartStudyAsync(sentence, result.Text);
         }
         catch (OperationCanceledException)
@@ -581,6 +628,8 @@ sealed class TrayApplicationContext : ApplicationContext
         var token = cts.Token;
         var sentence = _overlay.EnglishText;
         _overlay.BeginWordLookup(word);
+        if (_config.SpeakOnLookup && Speech.Available)
+            Speech.Speak(word, _config.SpeakSpeed);
         try
         {
             var gloss = await _translator.LookupWordAsync(word, sentence, token);
@@ -655,6 +704,14 @@ sealed class TrayApplicationContext : ApplicationContext
         _overlay.ShowTranslation(chinese, text, "按义项改写");
         AddRecent(chinese, text);
         _overlay.SetStatus("已换成这句，可以复制或写入", OverlayForm.StatusKind.Success);
+    }
+
+    void Speak(string text)
+    {
+        if (text.Trim().Length == 0)
+            return;
+        if (!Speech.Speak(text, _config.SpeakSpeed))
+            _overlay.SetStatus(Speech.MissingHint, OverlayForm.StatusKind.Error);
     }
 
     void CopyEnglish()
@@ -750,6 +807,29 @@ sealed class TrayApplicationContext : ApplicationContext
         _overlay.ShowTranslation(chinese, english, "");
         _overlay.FinishSession();
         CopyEnglish();
+        ScheduleAutoHide();
+    }
+
+    /// <summary>托盘菜单跟着主题和强调色走。</summary>
+    void ThemeMenu()
+    {
+        var p = Theme.Current;
+        _menu.Renderer = new ToolStripProfessionalRenderer(new ThemedMenu.MenuColors(p)) { RoundedEdges = false };
+        _menu.BackColor = p.Group;
+        void Paint(ToolStripItemCollection items)
+        {
+            foreach (ToolStripItem item in items)
+            {
+                item.ForeColor = item.Enabled ? p.Text : p.Dim;
+                if (item is ToolStripMenuItem { HasDropDownItems: true } parent)
+                {
+                    parent.DropDown.BackColor = p.Group;
+                    Paint(parent.DropDownItems);
+                }
+            }
+        }
+
+        Paint(_menu.Items);
     }
 
     void RefreshMenu()
@@ -835,6 +915,7 @@ sealed class TrayApplicationContext : ApplicationContext
     void ApplySettings(AppConfig next, bool startup)
     {
         var hotkeyChanged = !string.Equals(next.Hotkey, _config.Hotkey, StringComparison.OrdinalIgnoreCase) || next.Enabled != _config.Enabled;
+        var lookChanged = next.Theme != _config.Theme || next.Accent != _config.Accent || next.CardTextSize != _config.CardTextSize;
         _config = next;
         if (!_config.TrySave(out var error))
             _icon.ShowBalloonTip(5000, "输入翻译", "设置没能保存：" + error, ToolTipIcon.Warning);
@@ -842,9 +923,19 @@ sealed class TrayApplicationContext : ApplicationContext
         _translatedFor = "";
         _doneChinese = "";
         _failedFor = "";
-        Theme.Apply(_config.Theme, _config.CardTextSize);
-        _overlay.ApplyTheme();
+        Theme.Apply(_config.Theme, _config.CardTextSize, _config.Accent);
+        _overlay.ApplyOptions(_config);
+        if (lookChanged)
+        {
+            _overlay.ApplyTheme();
+            _settings?.ApplyTheme(); // 设置窗口自己也立刻换颜色。
+        }
+
+        if (_config.AutoHideSeconds <= 0)
+            _hideTimer.Stop();
         RegisterHotkey(announce: hotkeyChanged);
+        if (hotkeyChanged)
+            _settings?.SetHotkeyStatus(HotkeyStatus());
         ApplyStartup(startup);
         UpdateTrayState();
         TraceLog.Note("settings saved engine=" + _config.Engine + " level=" + _config.EnglishLevel + " chat=" + _config.HasChatApi);
@@ -957,8 +1048,10 @@ sealed class TrayApplicationContext : ApplicationContext
         _showThread.Join(500);
         _timer.Stop();
         _idleTimer.Stop();
+        _hideTimer.Stop();
         CancelTranslation();
         CancelWordWork();
+        Speech.Dispose();
         _settings?.Close();
         _hotkey.Dispose();
         _watcher.Dispose();
@@ -1044,27 +1137,4 @@ sealed class TrayApplicationContext : ApplicationContext
 
     [DllImport("user32.dll")]
     static extern bool DestroyIcon(IntPtr handle);
-
-    sealed class MenuColors : ProfessionalColorTable
-    {
-        static readonly Color Hover = Color.FromArgb(230, 240, 253);
-        static readonly Color Line = Color.FromArgb(222, 228, 237);
-
-        public override Color MenuItemSelected => Hover;
-        public override Color MenuItemBorder => Hover;
-        public override Color MenuItemSelectedGradientBegin => Hover;
-        public override Color MenuItemSelectedGradientEnd => Hover;
-        public override Color MenuItemPressedGradientBegin => Hover;
-        public override Color MenuItemPressedGradientEnd => Hover;
-        public override Color MenuBorder => Line;
-        public override Color ToolStripDropDownBackground => Color.White;
-        public override Color ImageMarginGradientBegin => Color.White;
-        public override Color ImageMarginGradientMiddle => Color.White;
-        public override Color ImageMarginGradientEnd => Color.White;
-        public override Color SeparatorDark => Line;
-        public override Color SeparatorLight => Color.White;
-        public override Color CheckBackground => Color.FromArgb(219, 234, 254);
-        public override Color CheckSelectedBackground => Color.FromArgb(191, 219, 254);
-        public override Color CheckPressedBackground => Color.FromArgb(191, 219, 254);
-    }
 }

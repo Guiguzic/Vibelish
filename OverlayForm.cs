@@ -17,6 +17,7 @@ sealed class OverlayForm : Form
         Stay,
         Cursor,
         TopCenter,
+        BottomCenter,
         AboveInput,
     }
 
@@ -34,30 +35,35 @@ sealed class OverlayForm : Form
         Done,
     }
 
-    readonly Pill _pill = new();
-    readonly Pill _level = new();
+    readonly StatusLine _header = new();
+    readonly TextLabel _hint = new() { SingleLine = true, AlignRight = true };
     readonly TextLabel _source = new();
     readonly ClickableEnglish _english = new();
-    readonly TextLabel _hint = new();
+    readonly TextLabel _error = new();
     readonly StudyStrip _study = new();
     readonly WordGlossPanel _gloss = new();
-    readonly TextLabel _detail = new() { SingleLine = true, AlignRight = true };
-    readonly TextLabel _status = new();
+    readonly TextLabel _meta = new() { SingleLine = true, AlignRight = true };
     readonly RoundButton _copy = new();
     readonly RoundButton _write = new();
+    readonly RoundButton _speak = new();
     readonly RoundButton _retry = new();
     readonly RoundButton _settings = new();
     readonly RoundButton _close = new();
-    readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 3200 };
-    readonly System.Windows.Forms.Timer _pulseTimer = new() { Interval = 120 };
+    readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 2600 };
+    readonly System.Windows.Forms.Timer _pulseTimer = new() { Interval = 90 };
 
     CardState _state = CardState.Idle;
     string _idleTitle = "输入翻译";
     string _idleHint = "";
+    string _level = "";
     string _englishShown = "";
     string _translatedSource = "";
+    string _detail = "";
+    string _errorText = "";
+    string _status = "";
     bool _stale;
     bool _translating;
+    bool _streaming;
     StatusKind _statusKind;
     bool _dragPending;
     bool _drag;
@@ -70,6 +76,15 @@ sealed class OverlayForm : Form
     bool _glossOpen;
     bool _studyOpen;
     bool _dwmCorners;
+    int _footerTop = -1;
+
+    // 显示选项（设置 → 卡片与外观 / 单词与朗读）。
+    bool _showSource = true;
+    bool _showHints = true;
+    bool _showEngine = true;
+    bool _clickLookup = true;
+    bool _showSpeak = true;
+    string _position = "input";
 
     public OverlayForm()
     {
@@ -87,18 +102,21 @@ sealed class OverlayForm : Form
         _gloss.CloseClicked += (_, _) => CloseGloss();
         _gloss.RewriteClicked += (_, _) => RewriteRequested?.Invoke(this, EventArgs.Empty);
         _gloss.AdoptClicked += (_, _) => AdoptRequested?.Invoke(this, EventArgs.Empty);
+        _gloss.SpeakClicked += (_, _) => SpeakWordRequested?.Invoke(_glossWord);
         _gloss.SelectionChanged += (_, _) => Relayout();
 
-        _copy.Text = "复制";
-        _copy.Glyph = Glyphs.Copy;
         _write.Text = "写入输入框";
         _write.Glyph = Glyphs.Edit;
         _write.Variant = ButtonVariant.Primary;
+        _copy.Text = "复制";
+        _copy.Glyph = Glyphs.Copy;
+        _speak.Glyph = Glyphs.Speaker;
         _retry.Text = "重试";
-        _retry.Glyph = Glyphs.Refresh;
-        _retry.Variant = ButtonVariant.Ghost;
+        _retry.Variant = ButtonVariant.Link;
         _settings.Variant = ButtonVariant.Ghost;
-        _close.Variant = ButtonVariant.Danger;
+        _close.Variant = ButtonVariant.Ghost;
+        foreach (var button in new[] { _write, _copy, _speak })
+            button.CornerRadius = 99;
         if (Theme.Icons(10) != null)
         {
             _settings.Glyph = Glyphs.Settings;
@@ -108,15 +126,18 @@ sealed class OverlayForm : Form
         {
             _settings.Text = "设置";
             _close.Text = "×";
+            _speak.Text = "朗读";
         }
 
         var tips = new ToolTip { ShowAlways = true, InitialDelay = 400 };
         tips.SetToolTip(_settings, "设置");
         tips.SetToolTip(_close, "关闭（听写中会结束本次）");
         tips.SetToolTip(_write, "用英文替换输入框里的内容");
+        tips.SetToolTip(_speak, "朗读英文");
 
         _copy.Click += (_, _) => CopyRequested?.Invoke(this, EventArgs.Empty);
         _write.Click += (_, _) => WriteRequested?.Invoke(this, EventArgs.Empty);
+        _speak.Click += (_, _) => SpeakRequested?.Invoke(this, EventArgs.Empty);
         _retry.Click += (_, _) => RetryRequested?.Invoke(this, EventArgs.Empty);
         _settings.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
         _close.Click += (_, _) => CloseRequested?.Invoke(this, EventArgs.Empty);
@@ -124,31 +145,40 @@ sealed class OverlayForm : Form
         _statusTimer.Tick += (_, _) =>
         {
             _statusTimer.Stop();
-            if (_statusKind != StatusKind.Error && _status.Text.Length > 0)
+            if (_statusKind != StatusKind.Error && _status.Length > 0)
             {
-                _status.Text = "";
+                _status = "";
                 Relayout();
             }
         };
-        _pulseTimer.Tick += (_, _) => _pill.Pulse();
+        _pulseTimer.Tick += (_, _) =>
+        {
+            _header.Pulse();
+            _english.Tick();
+        };
 
         Controls.AddRange(new Control[]
         {
-            _pill, _level, _source, _english, _study, _hint, _gloss, _detail, _status,
-            _copy, _write, _retry, _settings, _close,
+            _header, _hint, _source, _english, _error, _study, _gloss, _meta,
+            _write, _copy, _speak, _retry, _settings, _close,
         });
-        foreach (var control in new Control[] { this, _pill, _level, _source, _english, _hint, _detail, _status, _study })
+        foreach (var control in new Control[] { this, _header, _hint, _source, _english, _error, _meta })
             AttachDrag(control);
         ApplyTheme();
     }
 
     public string SourceText { get; private set; } = "";
 
-    /// <summary>当前有效的英文译文。正在更新（旧译文变灰）时为空，复制 / 写入都不可用。</summary>
-    public string EnglishText => _stale ? "" : _englishShown;
+    /// <summary>当前有效的英文译文。正在更新（旧译文变灰）或还在逐字输出时为空，复制 / 写入都不可用。</summary>
+    public string EnglishText => _stale || _streaming ? "" : _englishShown;
+
+    /// <summary>鼠标停在卡片上（自动收起时要等一等）。</summary>
+    public bool PointerOver => Visible && Bounds.Contains(Cursor.Position);
 
     public event EventHandler? CopyRequested;
     public event EventHandler? WriteRequested;
+    public event EventHandler? SpeakRequested;
+    public event Action<string>? SpeakWordRequested;
     public event Action<string>? WordClicked;
     public event EventHandler? RewriteRequested;
     public event EventHandler? AdoptRequested;
@@ -199,25 +229,25 @@ sealed class OverlayForm : Form
         LayoutCard();
     }
 
-    /// <summary>主题或文字大小改了以后重新上色、重新排版。</summary>
+    /// <summary>主题、强调色或文字大小改了以后重新上色、重新排版。</summary>
     public void ApplyTheme()
     {
         var p = Theme.Current;
         BackColor = p.Card;
         _english.BackColor = p.Card;
-        _english.Font = Theme.CardEnglish(14.5F);
-        _source.Font = Theme.Card(10.5F);
-        _hint.Font = Theme.Card(8.5F);
-        _hint.ForeColor = p.Dim;
-        _detail.Font = Theme.Card(8F);
-        _detail.ForeColor = p.Dim;
-        _status.Font = Theme.Card(8.5F);
-        _pill.Font = Theme.Card(8.5F, FontStyle.Bold);
-        _level.Font = Theme.Card(8F);
-        foreach (var button in new[] { _copy, _write, _retry })
+        _english.Font = Theme.CardEnglish(15F);
+        _source.Font = Theme.Card(10F);
+        _error.Font = Theme.Card(9F);
+        _hint.Font = Theme.Card(8.25F);
+        _meta.Font = Theme.Card(8.25F);
+        _header.Font = Theme.Card(8.75F);
+        _header.LevelFont = Theme.Card(8.75F);
+        foreach (var button in new[] { _copy, _write })
             button.Font = Theme.Card(9F);
-        _settings.Font = Theme.Card(10F);
-        _close.Font = Theme.Card(10F);
+        _speak.Font = Theme.Card(9.5F);
+        _retry.Font = Theme.Card(9F);
+        _settings.Font = Theme.Card(9.5F);
+        _close.Font = Theme.Card(9.5F);
         _study.ApplyTheme();
         _gloss.ApplyTheme();
         UpdateColors();
@@ -225,6 +255,20 @@ sealed class OverlayForm : Form
         if (IsHandleCreated)
             Relayout();
         Invalidate(true);
+    }
+
+    /// <summary>卡片上显示哪些东西、放在哪里。</summary>
+    public void ApplyOptions(AppConfig config)
+    {
+        _showSource = config.ShowSource;
+        _showHints = config.ShowHints;
+        _showEngine = config.ShowEngine;
+        _clickLookup = config.ClickLookup;
+        _showSpeak = config.ShowSpeak;
+        _position = config.CardPosition;
+        _study.Style = config.StudyStyle;
+        if (IsHandleCreated && Visible)
+            Relayout();
     }
 
     /// <summary>空闲提示卡片：程序刚启动、托盘「显示卡片」时用。</summary>
@@ -237,7 +281,9 @@ sealed class OverlayForm : Form
         _englishShown = "";
         _translatedSource = "";
         _stale = false;
-        _detail.Text = "";
+        _streaming = false;
+        _detail = "";
+        _errorText = "";
         SetTranslating(false);
         ClearStatus();
         HideGloss();
@@ -249,13 +295,15 @@ sealed class OverlayForm : Form
     public void BeginListening(string level, string hint)
     {
         _state = CardState.Listening;
-        _level.Text = level;
+        _level = level;
         _idleHint = hint;
         SourceText = "";
         _englishShown = "";
         _translatedSource = "";
         _stale = false;
-        _detail.Text = "";
+        _streaming = false;
+        _detail = "";
+        _errorText = "";
         _movedByUser = false;
         SetTranslating(false);
         ClearStatus();
@@ -281,8 +329,7 @@ sealed class OverlayForm : Form
             }
         }
 
-        if (_statusKind == StatusKind.Error)
-            ClearStatus();
+        _errorText = "";
         Present(chinese.Length == 0 ? CardPlace.Stay : CardPlace.AboveInput, anchor);
     }
 
@@ -291,13 +338,28 @@ sealed class OverlayForm : Form
         if (_translating == translating)
             return;
         _translating = translating;
-        if (translating)
-            _pulseTimer.Start();
-        else
-            _pulseTimer.Stop();
-        UpdatePill();
+        if (!translating)
+            _streaming = false;
+        UpdateTimers();
         if (Visible)
             Relayout();
+    }
+
+    /// <summary>流式输出：译文一段一段到，先显示出来，结束后再调 <see cref="ShowTranslation"/>。</summary>
+    public void ShowPartial(string chinese, string english)
+    {
+        if (english.Length == 0)
+            return;
+        SourceText = chinese;
+        _translatedSource = chinese;
+        _englishShown = english;
+        _stale = false;
+        _streaming = true;
+        _errorText = "";
+        HideGloss();
+        HideStudy();
+        UpdateTimers();
+        Present(CardPlace.Stay, Rectangle.Empty);
     }
 
     public void ShowTranslation(string chinese, string english, string detail)
@@ -306,17 +368,24 @@ sealed class OverlayForm : Form
         _translatedSource = chinese;
         _englishShown = english;
         _stale = false;
-        _detail.Text = detail;
+        _streaming = false;
+        _detail = detail;
+        _errorText = "";
         if (_statusKind == StatusKind.Error)
             ClearStatus();
         HideGloss();
         HideStudy();
+        UpdateTimers();
         Present(CardPlace.Stay, Rectangle.Empty);
     }
 
     public void ShowTranslationError(string message)
     {
-        SetStatus(message, StatusKind.Error);
+        _streaming = false;
+        _errorText = message;
+        UpdateTimers();
+        if (Visible)
+            Relayout();
     }
 
     /// <summary>本次听写结束：保留卡片内容，方便复制。</summary>
@@ -328,10 +397,18 @@ sealed class OverlayForm : Form
 
     public void SetStatus(string text, StatusKind kind = StatusKind.Info)
     {
-        _status.Text = text;
+        if (kind == StatusKind.Error)
+        {
+            _errorText = text;
+            if (Visible)
+                Relayout();
+            return;
+        }
+
+        _status = text;
         _statusKind = kind;
         _statusTimer.Stop();
-        if (text.Length > 0 && kind != StatusKind.Error)
+        if (text.Length > 0)
             _statusTimer.Start();
         if (Visible)
             Relayout();
@@ -417,16 +494,39 @@ sealed class OverlayForm : Form
         Relayout();
     }
 
+    void UpdateTimers()
+    {
+        var animate = _translating || _streaming;
+        _english.Caret = _streaming;
+        if (animate)
+            _pulseTimer.Start();
+        else
+            _pulseTimer.Stop();
+    }
+
     void Present(CardPlace place, Rectangle anchor)
     {
         var wasVisible = Visible;
         var oldHeight = Height;
         UpdateColors();
         LayoutCard();
+
+        // 设置里选了「屏幕顶部 / 底部」时，不再跟着输入框跑。
+        if (place is CardPlace.Cursor or CardPlace.AboveInput && !_movedByUser)
+        {
+            if (_position == "top")
+                place = CardPlace.TopCenter;
+            else if (_position == "bottom")
+                place = CardPlace.BottomCenter;
+        }
+
         switch (place)
         {
             case CardPlace.TopCenter:
                 PinTopCenter();
+                break;
+            case CardPlace.BottomCenter:
+                PinBottomCenter();
                 break;
             case CardPlace.Cursor:
                 _anchored = true;
@@ -462,6 +562,17 @@ sealed class OverlayForm : Form
         _placedBelow = true;
     }
 
+    void PinBottomCenter()
+    {
+        var area = Screen.FromPoint(Cursor.Position).WorkingArea;
+        var x = area.Left + Math.Max(0, (area.Width - Width) / 2);
+        var y = area.Bottom - Height - Theme.Scale(this, 36);
+        Location = new Point(x, y);
+        _movedByUser = false;
+        _anchored = true;
+        _placedBelow = false;
+    }
+
     void HideGloss()
     {
         _glossWord = "";
@@ -479,71 +590,45 @@ sealed class OverlayForm : Form
     void ClearStatus()
     {
         _statusTimer.Stop();
-        _status.Text = "";
+        _status = "";
         _statusKind = StatusKind.Info;
     }
 
-    void UpdatePill()
+    void UpdateHeader()
     {
         var p = Theme.Current;
-        if (_translating)
-        {
-            _pill.Set("翻译中", p.Accent, true);
-            return;
-        }
-
-        switch (_state)
-        {
-            case CardState.Listening:
-                _pill.Set("正在听写", p.Success, false);
-                break;
-            case CardState.Done:
-                _pill.Set(EnglishText.Length > 0 ? "已完成" : "已结束", p.Muted, false);
-                break;
-            default:
-                _pill.Set(_idleTitle, p.Accent, false);
-                break;
-        }
+        if (_translating || _streaming)
+            _header.Set("翻译中", p.Accent, true, _level);
+        else if (_state == CardState.Listening)
+            _header.Set("听写中", p.Success, false, _level);
+        else if (_state == CardState.Done)
+            _header.Set(_englishShown.Length > 0 ? "已完成" : "已结束", p.Dim, false, _level);
+        else
+            _header.Set(_idleTitle, p.Accent, false, "");
     }
 
     void UpdateColors()
     {
         var p = Theme.Current;
-        UpdatePill();
-        _pill.BackColor = p.Card;
-        _pill.ForeColor = p.Body;
-        _pill.Fill = Color.Empty;
-        _level.BackColor = p.Card;
-        _level.ForeColor = p.Muted;
-        _level.Fill = p.Surface;
-        var hintOnly = SourceText.Length == 0;
-        _source.ForeColor = hintOnly ? (_state == CardState.Idle ? p.Body : p.Muted) : p.Body;
-        _status.ForeColor = _statusKind switch
-        {
-            StatusKind.Error => p.Error,
-            StatusKind.Success => p.Success,
-            _ => p.Muted,
-        };
+        UpdateHeader();
+        _header.BackColor = p.Card;
+        _header.ForeColor = p.Body;
+        _header.LevelColor = p.Dim;
+        _hint.ForeColor = p.Dim;
+        _source.ForeColor = SourceText.Length == 0 && _state == CardState.Idle ? p.Body : p.Muted;
+        _error.ForeColor = p.Error;
+        _meta.ForeColor = _status.Length > 0
+            ? _statusKind == StatusKind.Success ? p.Success : p.Muted
+            : p.Dim;
 
         var english = EnglishText.Length > 0;
-        if (_englishShown.Length > 0)
-        {
-            _english.English = _englishShown;
-            _english.ForeColor = _stale ? p.Dim : p.Text;
-        }
-        else if (_translating)
-        {
-            _english.English = "…";
-            _english.ForeColor = p.Dim;
-        }
-        else
-        {
-            _english.English = "";
-        }
-
-        _english.LookupEnabled = english && HasLatinWord(_englishShown);
+        _english.English = _englishShown;
+        _english.ForeColor = _stale ? p.Dim : p.Text;
+        _english.Loading = _englishShown.Length == 0 && _translating;
+        _english.LookupEnabled = english && _clickLookup && HasLatinWord(_englishShown);
         _copy.Enabled = english;
         _write.Enabled = english;
+        _speak.Enabled = english;
     }
 
     void Relayout()
@@ -570,6 +655,25 @@ sealed class OverlayForm : Form
         return false;
     }
 
+    string HintText()
+    {
+        if (!_showHints)
+            return "";
+        var hasEnglish = EnglishText.Length > 0;
+        if (_state == CardState.Listening)
+        {
+            if (SourceText.Length == 0)
+                return "Esc 取消";
+            return hasEnglish && _english.LookupEnabled && !_glossOpen
+                ? "点词查义 · Enter 完成 · Esc 取消"
+                : "Enter 完成 · Shift+Enter 换行 · Esc 取消";
+        }
+
+        if (_state == CardState.Done && hasEnglish && _english.LookupEnabled && !_glossOpen)
+            return "点单词查释义";
+        return "";
+    }
+
     void LayoutCard()
     {
         if (!IsHandleCreated)
@@ -578,131 +682,132 @@ sealed class OverlayForm : Form
         var scale = DeviceDpi / 96.0;
         int Sc(int value) => (int)Math.Round(value * scale);
 
-        var pad = Sc(14);
-        var gap = Sc(6);
-        var iconSize = Sc(26);
-        var hasSource = SourceText.Length > 0;
-        var sourceText = hasSource ? SourceText : _idleHint;
-        var showSource = sourceText.Length > 0;
-        var showEnglish = _english.English.Length > 0;
+        var padX = Sc(18);
+        var icon = Sc(26);
         var hasEnglish = EnglishText.Length > 0;
+        var sourceText = SourceText.Length > 0 ? (_showSource ? SourceText : "") : _idleHint;
+        var showSource = sourceText.Length > 0;
+        var showEnglish = _englishShown.Length > 0 || _english.Loading;
+        var showError = _errorText.Length > 0;
         var showStudy = _studyOpen && hasEnglish;
         var showGloss = _glossOpen && hasEnglish;
-        var showButtons = _englishShown.Length > 0;
-        var showStatus = _status.Text.Length > 0;
-        var showRetry = showStatus && _statusKind == StatusKind.Error;
-        var showLevel = _level.Text.Length > 0 && _state != CardState.Idle;
-
-        var hint = "";
-        if (_state == CardState.Listening)
-            hint = hasEnglish && !_glossOpen ? "点单词查释义 · Enter 完成 · Esc 取消" : hasSource ? "Enter 完成 · Esc 取消 · Shift+Enter 换行" : "";
-        else if (hasEnglish && _english.LookupEnabled && !_glossOpen && !showStudy)
-            hint = "点单词查释义";
-        _hint.Text = hint;
-        var showHint = hint.Length > 0;
+        var showFooter = _englishShown.Length > 0;
+        var hint = HintText();
 
         _source.Text = sourceText;
-        _pill.Visible = true;
-        _level.Visible = showLevel;
+        _error.Text = _errorText;
+        _hint.Text = hint;
         _source.Visible = showSource;
         _english.Visible = showEnglish;
+        _error.Visible = showError;
+        _retry.Visible = showError && _state != CardState.Idle;
         _study.Visible = showStudy;
-        _hint.Visible = showHint;
         _gloss.Visible = showGloss;
-        _status.Visible = showStatus;
-        _retry.Visible = showRetry;
-        _copy.Visible = showButtons;
-        _write.Visible = showButtons;
-        _detail.Visible = showButtons && _detail.Text.Length > 0 && !_stale;
+        _copy.Visible = showFooter;
+        _write.Visible = showFooter;
+        _speak.Visible = showFooter && _showSpeak;
+        var meta = _status.Length > 0 ? _status : _showEngine && !_stale && !_streaming ? _detail : "";
+        _meta.Text = meta;
+        _meta.Visible = showFooter && meta.Length > 0;
 
-        var measureWidth = Sc(600);
-        var width = Sc(340);
+        var measureWidth = Sc(580);
+        var width = Sc(380);
         if (showSource)
-            width = Math.Max(width, Measure(sourceText, _source.Font, measureWidth).Width + pad * 2 + Sc(4));
+            width = Math.Max(width, Measure(sourceText, _source.Font, measureWidth).Width + padX * 2 + Sc(4));
         if (showEnglish)
-            width = Math.Max(width, _english.Measure(measureWidth).Width + pad * 2);
-        if (showHint)
-            width = Math.Max(width, Measure(hint, _hint.Font, measureWidth).Width + pad * 2);
-        if (showStatus)
-            width = Math.Max(width, Measure(_status.Text, _status.Font, measureWidth).Width + pad * 2 + (showRetry ? _retry.PreferredWidth(Sc(8)) + Sc(8) : 0));
+            width = Math.Max(width, _english.Measure(measureWidth).Width + padX * 2 + Sc(6));
+        if (showError)
+            width = Math.Max(width, Measure(_errorText, _error.Font, measureWidth).Width + padX * 2 + _retry.PreferredWidth(Sc(8)) + Sc(8));
         if (showGloss)
-            width = Math.Max(width, Sc(440));
-        width = Math.Min(width, Sc(660));
-        var inner = width - pad * 2;
+            width = Math.Max(width, Sc(460));
+        if (_streaming && Visible)
+            width = Math.Max(width, Width);
+        width = Math.Min(width, Sc(620));
+        var inner = width - padX * 2;
 
-        // 标题行：状态 + 难度，右边是设置和关闭。
+        // 标题行：状态点 + 文字 + 难度；右边是提示、设置和关闭。
         var y = Sc(10);
-        var pillSize = _pill.Measure(Sc);
-        _pill.SetBounds(pad - Sc(2), y + (iconSize - pillSize.Height) / 2, pillSize.Width, pillSize.Height);
-        if (showLevel)
-        {
-            var levelSize = _level.Measure(Sc);
-            _level.SetBounds(_pill.Right + Sc(4), y + (iconSize - levelSize.Height) / 2, levelSize.Width, levelSize.Height);
-        }
-
-        _close.SetBounds(width - Sc(8) - iconSize, y, iconSize, iconSize);
-        _settings.SetBounds(_close.Left - Sc(2) - iconSize, y, iconSize, iconSize);
-        y += iconSize + Sc(6);
+        var headerSize = _header.Measure();
+        _header.SetBounds(padX - Sc(1), y + (icon - headerSize.Height) / 2, headerSize.Width, headerSize.Height);
+        _close.SetBounds(width - Sc(8) - icon, y, icon, icon);
+        _settings.SetBounds(_close.Left - icon, y, icon, icon);
+        var hintRoom = _settings.Left - Sc(8) - (_header.Right + Sc(16));
+        var hintWidth = hint.Length == 0 ? 0 : _hint.Measure(measureWidth).Width;
+        _hint.Visible = hint.Length > 0 && hintWidth <= hintRoom;
+        if (_hint.Visible)
+            _hint.SetBounds(_settings.Left - Sc(6) - hintWidth, y, hintWidth, icon);
+        y += icon + Sc(4);
 
         if (showSource)
-            y = Place(_source, pad, y, inner) + Sc(4);
+            y = Place(_source, padX, y, inner) + Sc(6);
         if (showEnglish)
         {
             var size = _english.Measure(inner);
             var height = Math.Max(size.Height, _english.Font.Height + 2);
-            _english.SetBounds(pad, y, inner, height);
-            y += height + Sc(6);
+            _english.SetBounds(padX, y, inner, height);
+            y += height;
+        }
+
+        if (showError)
+        {
+            y += Sc(8);
+            var retryWidth = _retry.Visible ? _retry.PreferredWidth(Sc(8)) : 0;
+            var textWidth = inner - (retryWidth > 0 ? retryWidth + Sc(8) : 0);
+            var top = y;
+            y = Place(_error, padX, y, textWidth);
+            if (_retry.Visible)
+            {
+                var retryHeight = Sc(24);
+                _retry.SetBounds(padX + inner - retryWidth, top - Sc(4), retryWidth, retryHeight);
+                y = Math.Max(y, top + retryHeight - Sc(4));
+            }
         }
 
         if (showStudy)
         {
+            y += Sc(12);
             var studyHeight = _study.Arrange(inner, Sc);
-            _study.SetBounds(pad, y, inner, studyHeight);
-            y += studyHeight + Sc(8);
+            _study.SetBounds(padX, y, inner, studyHeight);
+            y += studyHeight;
         }
 
         if (showGloss)
         {
+            y += Sc(12);
             var glossHeight = _gloss.Arrange(inner, Sc);
-            _gloss.SetBounds(pad, y, inner, glossHeight);
-            y += glossHeight + Sc(10);
+            _gloss.SetBounds(padX, y, inner, glossHeight);
+            y += glossHeight;
         }
 
-        if (showButtons)
+        _footerTop = -1;
+        if (showFooter)
         {
+            y += Sc(14);
+            _footerTop = y;
+            y += Sc(12);
             var buttonHeight = Sc(30);
-            var copyWidth = _copy.PreferredWidth(Sc(12));
-            var writeWidth = _write.PreferredWidth(Sc(12));
-            _copy.SetBounds(pad, y, copyWidth, buttonHeight);
-            _write.SetBounds(_copy.Right + Sc(8), y, writeWidth, buttonHeight);
-            if (_detail.Visible)
+            var writeWidth = _write.PreferredWidth(Sc(14));
+            var copyWidth = _copy.PreferredWidth(Sc(14));
+            _write.SetBounds(padX, y, writeWidth, buttonHeight);
+            _copy.SetBounds(_write.Right + Sc(8), y, copyWidth, buttonHeight);
+            var right = _copy.Right;
+            if (_speak.Visible)
             {
-                var left = _write.Right + Sc(10);
-                _detail.SetBounds(left, y, Math.Max(0, pad + inner - left), buttonHeight);
-                _detail.Visible = _detail.Width > Sc(40);
+                _speak.SetBounds(_copy.Right + Sc(8), y, buttonHeight, buttonHeight);
+                right = _speak.Right;
             }
 
-            y += buttonHeight + Sc(8);
-        }
-
-        if (showHint)
-            y = Place(_hint, pad, y, inner) + Sc(2);
-
-        if (showStatus)
-        {
-            var retryWidth = showRetry ? _retry.PreferredWidth(Sc(8)) : 0;
-            var textWidth = showRetry ? inner - retryWidth - Sc(8) : inner;
-            var top = y;
-            y = Place(_status, pad, y, textWidth);
-            if (showRetry)
+            if (_meta.Visible)
             {
-                var retryHeight = Sc(24);
-                _retry.SetBounds(pad + inner - retryWidth, top - Sc(3), retryWidth, retryHeight);
-                y = Math.Max(y, top + retryHeight - Sc(3));
+                var left = right + Sc(12);
+                _meta.SetBounds(left, y, Math.Max(0, padX + inner - left), buttonHeight);
+                _meta.Visible = _meta.Width > Sc(40);
             }
+
+            y += buttonHeight;
         }
 
-        Height = Math.Max(y + Sc(10), Sc(56));
+        Height = Math.Max(y + Sc(14), Sc(58));
         Width = width;
         if (!_dwmCorners)
             ApplyRoundRegion(Sc(12));
@@ -785,13 +890,21 @@ sealed class OverlayForm : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
+        var g = e.Graphics;
+        var p = Theme.Current;
+        if (_footerTop >= 0)
+        {
+            using var line = new Pen(p.Separator);
+            var pad = Theme.Scale(this, 18);
+            g.DrawLine(line, pad, _footerTop, Width - pad, _footerTop);
+        }
+
         if (_dwmCorners)
             return;
-        var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var bounds = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
         using var path = Theme.RoundedRect(bounds, Theme.Scale(this, 12));
-        using var border = new Pen(Theme.Current.CardBorder);
+        using var border = new Pen(p.CardBorder);
         g.DrawPath(border, path);
     }
 
@@ -867,8 +980,7 @@ sealed class OverlayForm : Form
     {
         if (!_dwmCorners || !IsHandleCreated)
             return;
-        var c = Theme.Current.CardBorder;
-        var colorRef = c.R | (c.G << 8) | (c.B << 16);
+        var colorRef = Theme.ColorRef(Theme.Current.CardBorder);
         _ = DwmSetWindowAttribute(Handle, 34, ref colorRef, sizeof(int));
     }
 
@@ -890,14 +1002,15 @@ sealed class OverlayForm : Form
     static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 }
 
-/// <summary>卡片标题行上的小标签：可选的圆点 + 文字，翻译中时圆点会呼吸。</summary>
-sealed class Pill : Control
+/// <summary>卡片左上角的状态：一个圆点 + 文字 + 难度。翻译中圆点会呼吸。</summary>
+sealed class StatusLine : Control
 {
     Color _dot = Color.Empty;
     bool _animate;
     int _phase;
+    string _level = "";
 
-    public Pill()
+    public StatusLine()
     {
         SetStyle(
             ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
@@ -906,17 +1019,20 @@ sealed class Pill : Control
         TabStop = false;
     }
 
-    /// <summary>底色；Color.Empty 表示不画底。</summary>
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
-    public Color Fill { get; set; } = Color.Empty;
+    public Font? LevelFont { get; set; }
 
-    public void Set(string text, Color dot, bool animate)
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public Color LevelColor { get; set; } = Color.Gray;
+
+    public void Set(string text, Color dot, bool animate, string level)
     {
-        if (Text == text && _dot == dot && _animate == animate)
+        if (Text == text && _dot == dot && _animate == animate && _level == level)
             return;
         Text = text;
         _dot = dot;
         _animate = animate;
+        _level = level ?? "";
         Invalidate();
     }
 
@@ -924,17 +1040,20 @@ sealed class Pill : Control
     {
         if (!_animate)
             return;
-        _phase = (_phase + 1) % 16;
+        _phase = (_phase + 1) % 24;
         Invalidate();
     }
 
-    public Size Measure(Func<int, int> scale)
+    string Suffix => _level.Length == 0 ? "" : "  ·  " + _level;
+
+    public Size Measure()
     {
-        var text = TextRenderer.MeasureText(Text.Length == 0 ? " " : Text, Font, new Size(int.MaxValue, int.MaxValue),
-            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
-        var dot = _dot.IsEmpty ? 0 : scale(14);
-        var padX = Fill.IsEmpty ? scale(2) : scale(8);
-        return new Size(text.Width + dot + padX * 2 + 2, Math.Max(text.Height + scale(6), scale(20)));
+        var flags = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix;
+        var text = TextRenderer.MeasureText(Text.Length == 0 ? " " : Text, Font, new Size(int.MaxValue, int.MaxValue), flags);
+        var suffix = Suffix.Length == 0 ? Size.Empty
+            : TextRenderer.MeasureText(Suffix, LevelFont ?? Font, new Size(int.MaxValue, int.MaxValue), flags);
+        var dot = Theme.Scale(this, 14);
+        return new Size(dot + text.Width + suffix.Width + Theme.Scale(this, 4), Math.Max(text.Height, Theme.Scale(this, 18)));
     }
 
     protected override void OnPaintBackground(PaintEventArgs e)
@@ -946,25 +1065,27 @@ sealed class Pill : Control
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        var padX = Fill.IsEmpty ? Theme.Scale(this, 2) : Theme.Scale(this, 8);
-        if (!Fill.IsEmpty)
-        {
-            using var path = Theme.RoundedRect(new Rectangle(0, 0, Width - 1, Height - 1), Height / 2);
-            using var fill = new SolidBrush(Fill);
-            g.FillPath(fill, path);
-        }
-
-        var x = padX;
+        var x = Theme.Scale(this, 1);
         if (!_dot.IsEmpty)
         {
-            var size = Theme.Scale(this, 8);
-            var alpha = _animate ? 110 + (int)(145 * Math.Abs(Math.Sin(_phase * Math.PI / 16))) : 255;
+            var size = Theme.Scale(this, 7);
+            var alpha = _animate ? 90 + (int)(165 * (0.5 + 0.5 * Math.Cos(_phase * Math.PI / 12))) : 255;
+            if (_animate)
+            {
+                var halo = size + Theme.Scale(this, 4);
+                using var glow = new SolidBrush(Color.FromArgb(Math.Max(0, alpha / 4), _dot));
+                g.FillEllipse(glow, x - (halo - size) / 2f, (Height - halo) / 2f, halo, halo);
+            }
+
             using var brush = new SolidBrush(Color.FromArgb(alpha, _dot));
             g.FillEllipse(brush, x, (Height - size) / 2f, size, size);
             x += Theme.Scale(this, 14);
         }
 
-        TextRenderer.DrawText(g, Text, Font, new Rectangle(x, 0, Width - x, Height), ForeColor,
-            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
+        var flags = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter;
+        var textWidth = TextRenderer.MeasureText(Text, Font, new Size(int.MaxValue, int.MaxValue), flags).Width;
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(x, 0, textWidth + 2, Height), ForeColor, flags);
+        if (Suffix.Length > 0)
+            TextRenderer.DrawText(g, Suffix, LevelFont ?? Font, new Rectangle(x + textWidth, 0, Math.Max(1, Width - x - textWidth), Height), LevelColor, flags);
     }
 }
