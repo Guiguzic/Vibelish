@@ -1180,12 +1180,18 @@ sealed class TrayApplicationContext : ApplicationContext
         using (var graphics = Graphics.FromImage(bitmap))
         {
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
             graphics.Clear(Color.Transparent);
-            using var brush = new SolidBrush(Color.FromArgb(29, 112, 214));
-            graphics.FillEllipse(brush, 0, 0, size.Width - 1, size.Height - 1);
-            using var font = new Font("Segoe UI", size.Height * 0.38f, FontStyle.Bold, GraphicsUnit.Pixel);
-            TextRenderer.DrawText(graphics, "En", font, new Rectangle(0, 0, size.Width, size.Height), Color.White,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            using var brush = new SolidBrush(Color.FromArgb(37, 99, 235));
+            using var tile = Theme.RoundedRect(new Rectangle(0, 0, size.Width - 1, size.Height - 1), Math.Max(2, size.Width / 4));
+            graphics.FillPath(brush, tile);
+            // 和 app.ico 的小尺寸一样：一来一回两个白色箭头。
+            var u = size.Width / 16f;
+            using var pen = new Pen(Color.White, 2 * u) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+            graphics.DrawLine(pen, 3.5f * u, 5 * u, 12.5f * u, 5 * u);
+            graphics.DrawLines(pen, new[] { new PointF(10 * u, 2.5f * u), new PointF(12.5f * u, 5 * u), new PointF(10 * u, 7.5f * u) });
+            graphics.DrawLine(pen, 3.5f * u, 11 * u, 12.5f * u, 11 * u);
+            graphics.DrawLines(pen, new[] { new PointF(6 * u, 8.5f * u), new PointF(3.5f * u, 11 * u), new PointF(6 * u, 13.5f * u) });
         }
 
         return FromBitmap(bitmap);

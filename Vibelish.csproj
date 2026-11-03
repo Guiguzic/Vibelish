@@ -9,7 +9,7 @@
     <AssemblyName>Vibelish</AssemblyName>
     <RootNamespace>Vibelish</RootNamespace>
     <Product>Vibelish</Product>
-    <Version>1.3.0</Version>
+    <Version>1.3.1</Version>
     <Description>写 prompt 的时候，顺手学外语：多语言互译、重点词和更地道的说法。</Description>
     <Company>Vibelish</Company>
     <Copyright>Copyright (c) 2026 Guiguzic</Copyright>

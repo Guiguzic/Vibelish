@@ -46,11 +46,11 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 
 ## 安装
 
-到 [Releases](https://github.com/Guiguzic/Vibelish/releases) 下载 `Vibelish-Setup-1.3.0.exe`，双击安装（也可以[从源码构建](#从源码构建)）。
+到 [Releases](https://github.com/Guiguzic/Vibelish/releases) 下载 `Vibelish-Setup-1.3.1.exe`，双击安装（也可以[从源码构建](#从源码构建)）。
 
 - 装到当前用户目录 `%LOCALAPPDATA%\Programs\Vibelish`，**不需要管理员权限**，也**不需要另外装 .NET**。
 - 已经装过会显示「更新」，沿用原来的开机启动和桌面快捷方式选择，设置和 API Key 都保留。
-- 静默安装：`Vibelish-Setup-1.3.0.exe --silent`（或 `/S`），失败原因写在 `%TEMP%\Vibelish-Setup.log`。
+- 静默安装：`Vibelish-Setup-1.3.1.exe --silent`（或 `/S`），失败原因写在 `%TEMP%\Vibelish-Setup.log`。
 - 卸载：Windows 设置 → 应用 → Vibelish，或开始菜单里的「卸载 Vibelish」。设置文件 `%APPDATA%\Vibelish` 会保留。
 
 > 从旧版「输入翻译」升级：直接装新版就行。安装程序会清掉旧版的程序、快捷方式和开机启动项，第一次启动时自动把旧设置（包括 API Key）搬过来。
@@ -198,7 +198,7 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 
 - `bin\Release\net9.0-windows10.0.19041.0\Vibelish.exe`：依赖 .NET 9 桌面运行时
 - `publish\Vibelish.exe`：单文件自包含，旁边的 `PresentationNative_cor3.dll`、`vcruntime140_cor3.dll` 和 `hook\imehook.dll` 不能删
-- `installer\Vibelish-Setup-1.3.0.exe`：安装包，用 Windows 自带的 .NET Framework 4.8 运行
+- `installer\Vibelish-Setup-1.3.1.exe`：安装包，用 Windows 自带的 .NET Framework 4.8 运行
 
 ## 诊断
 
