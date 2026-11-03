@@ -1,0 +1,72 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>InputTranslate</AssemblyName>
+    <RootNamespace>InputTranslate</RootNamespace>
+    <Product>输入翻译</Product>
+    <Version>1.0.0</Version>
+    <Description>识别当前输入框，并把这一段话翻译成英文。</Description>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <ApplicationIcon>assets\app.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="assets\app.ico" LogicalName="InputTranslate.app.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="setup\**" />
+    <EmbeddedResource Remove="setup\**" />
+    <None Remove="setup\**" />
+  </ItemGroup>
+  <PropertyGroup>
+    <DesktopRefTfm>net9.0</DesktopRefTfm>
+    <DesktopRefRoot>$(NetCoreTargetingPackRoot)\Microsoft.WindowsDesktop.App.Ref</DesktopRefRoot>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(UiaRuntimeDir)' == ''">
+    <Reference Include="$(DesktopRefRoot)\*\ref\$(DesktopRefTfm)\UIAutomationClient.dll">
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="$(DesktopRefRoot)\*\ref\$(DesktopRefTfm)\UIAutomationTypes.dll">
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="$(DesktopRefRoot)\*\ref\$(DesktopRefTfm)\WindowsBase.dll">
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+  <!-- For self-contained publishing the UIAutomation assemblies must be real runtime
+       assemblies, otherwise the single-file bundle does not contain them. -->
+  <ItemGroup Condition="'$(UiaRuntimeDir)' != ''">
+    <Reference Include="$(UiaRuntimeDir)\UIAutomationClient.dll">
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="$(UiaRuntimeDir)\UIAutomationTypes.dll">
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="$(UiaRuntimeDir)\WindowsBase.dll">
+      <Private>true</Private>
+    </Reference>
+    <!-- UIAutomationTypes P/Invokes PresentationNative_cor3.dll. It exists in the
+         desktop shared framework but is not part of a WinForms self-contained app. -->
+    <None Include="$(UiaRuntimeDir)\PresentationNative_cor3.dll" Link="PresentationNative_cor3.dll"
+          Condition="Exists('$(UiaRuntimeDir)\PresentationNative_cor3.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="$(UiaRuntimeDir)\vcruntime140_cor3.dll" Link="vcruntime140_cor3.dll"
+          Condition="Exists('$(UiaRuntimeDir)\vcruntime140_cor3.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="native\imehook.dll" Link="hook\imehook.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,14 @@
+bin/
+obj/
+publish/
+.vs/
+*.user
+*.suo
+
+# 构建产物：安装包和编译好的钩子，源码在 native/imehook.cpp
+installer/*.exe
+native/*.dll
+native/*.obj
+native/*.pdb
+native/*.lib
+native/*.exp
