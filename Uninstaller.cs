@@ -14,12 +14,24 @@ static class Uninstaller
 
     const uint MoveFileDelayUntilReboot = 0x4;
 
+    /// <summary>安装程序放程序文件的位置。</summary>
+    public static string DefaultInstallDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Programs",
+        "InputTranslate");
+
     public static bool ConfirmAndRun(bool quiet)
     {
+        var exe = StartupRegistration.ExecutablePath;
+        var directory = Path.GetDirectoryName(exe) ?? "";
+        var installed = IsInstallDirectory(directory);
         if (!quiet)
         {
+            var detail = installed
+                ? "将删除程序文件、开始菜单/桌面快捷方式和开机自动启动。\n你的设置（%APPDATA%\\InputTranslate）会保留。"
+                : "将删除开始菜单/桌面快捷方式和开机自动启动。\n\n这一份不在安装目录里（" + directory + "），程序文件不会动，需要的话请手动删除。";
             var answer = MessageBox.Show(
-                "确定要卸载「输入翻译」吗？\n\n将删除程序文件、开始菜单/桌面快捷方式和开机自启动设置。",
+                "确定要卸载「输入翻译」吗？\n\n" + detail,
                 "卸载输入翻译",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question,
@@ -28,14 +40,52 @@ static class Uninstaller
                 return false;
         }
 
-        Run();
+        Run(exe, directory, installed);
+        if (!quiet)
+        {
+            MessageBox.Show("「输入翻译」已卸载。", "卸载输入翻译", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
         return true;
     }
 
-    static void Run()
+    /// <summary>只有确认是安装目录时才删整个文件夹。
+    /// 以前这里直接删 exe 所在的目录，把 exe 拷到桌面再运行 --uninstall 会把整个桌面删掉。</summary>
+    static bool IsInstallDirectory(string directory)
     {
-        var exe = StartupRegistration.ExecutablePath;
-        var directory = Path.GetDirectoryName(exe) ?? "";
+        if (directory.Length == 0)
+            return false;
+        var full = Normalize(directory);
+        if (string.Equals(full, Normalize(DefaultInstallDirectory), StringComparison.OrdinalIgnoreCase))
+            return true;
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(UninstallKeyPath, false);
+            var location = key?.GetValue("InstallLocation") as string ?? "";
+            return location.Length > 0
+                && string.Equals(full, Normalize(location), StringComparison.OrdinalIgnoreCase)
+                && File.Exists(Path.Combine(full, "InputTranslate.exe"));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    static string Normalize(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return path;
+        }
+    }
+
+    static void Run(string exe, string directory, bool installed)
+    {
         var localAppData = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "InputTranslate");
@@ -45,42 +95,44 @@ static class Uninstaller
         _ = StartupRegistration.SetEnabled(false, out _);
         RemoveUninstallEntry();
         RemoveShortcuts();
-
-        // The hook DLL is injected into other processes, so some files may be locked.
-        // Delete what we can now and let Windows remove the rest on reboot / next logon.
-        var locked = new List<string>();
-        foreach (var file in SafeEnumerateFiles(directory))
-        {
-            if (string.Equals(file, exe, StringComparison.OrdinalIgnoreCase))
-                continue;
-            try
-            {
-                File.Delete(file);
-            }
-            catch
-            {
-                locked.Add(file);
-            }
-        }
-
-        foreach (var file in locked)
-        {
-            try
-            {
-                _ = MoveFileEx(file, null, MoveFileDelayUntilReboot);
-            }
-            catch
-            {
-                // Best effort only.
-            }
-        }
-
-        DeleteDirectoryIfEmpty(directory);
-        TryDeleteDirectory(Path.Combine(directory, "hook"));
         TryDeleteDirectory(localAppData);
 
-        ScheduleFolderCleanup(directory);
-        TraceLog.Note("uninstall");
+        if (installed)
+        {
+            // The hook DLL is injected into other processes, so some files may be locked.
+            // Delete what we can now and let Windows remove the rest on reboot / next logon.
+            var locked = new List<string>();
+            foreach (var file in SafeEnumerateFiles(directory))
+            {
+                if (string.Equals(file, exe, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                try
+                {
+                    File.Delete(file);
+                }
+                catch
+                {
+                    locked.Add(file);
+                }
+            }
+
+            foreach (var file in locked)
+            {
+                try
+                {
+                    _ = MoveFileEx(file, null, MoveFileDelayUntilReboot);
+                }
+                catch
+                {
+                    // Best effort only.
+                }
+            }
+
+            TryDeleteDirectory(Path.Combine(directory, "hook"));
+            ScheduleFolderCleanup(directory);
+        }
+
+        TraceLog.Note("uninstall installed=" + installed);
     }
 
     static void KillOtherInstances()
@@ -170,19 +222,6 @@ static class Uninstaller
         catch
         {
             // Locked files are handled by the reboot / logon cleanup.
-        }
-    }
-
-    static void DeleteDirectoryIfEmpty(string directory)
-    {
-        try
-        {
-            if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())
-                Directory.Delete(directory);
-        }
-        catch
-        {
-            // Ignore.
         }
     }
 

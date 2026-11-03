@@ -408,39 +408,62 @@ sealed class EnglishLayout
         }
 
         var flags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+        // 单独量一个空格会得到 18 像素这种离谱的值，单词也会多出几像素的悬垂。
+        // 夹在两根竖线中间量，再减掉两根竖线，得到的才是真实的步进宽度。
+        var bars = TextRenderer.MeasureText("||", font, new Size(int.MaxValue, int.MaxValue), flags).Width;
+        int MeasureWidth(string piece) =>
+            Math.Max(1, TextRenderer.MeasureText("|" + piece + "|", font, new Size(int.MaxValue, int.MaxValue), flags).Width - bars);
         var lineHeight = Math.Max(
             font.Height,
             TextRenderer.MeasureText("Ag", font, new Size(int.MaxValue, int.MaxValue), flags).Height);
+        var lineStep = lineHeight + Math.Max(2, lineHeight / 6);
         var x = 0;
         var y = 0;
         var maxX = 0;
-        foreach (var piece in WordStudy.Split(text))
+        var pieces = WordStudy.Split(text);
+        for (var p = 0; p < pieces.Count; p++)
         {
+            var piece = pieces[p];
             if (piece.Text == "\n")
             {
-                y += lineHeight + 2;
+                y += lineStep;
                 x = 0;
                 continue;
             }
 
-            var size = TextRenderer.MeasureText(piece.Text, font, new Size(int.MaxValue, int.MaxValue), flags);
-            // MeasureText 在 NoPadding 下偶尔少 1 像素，最后一笔会被切掉。
-            var width = Math.Max(1, size.Width + 1);
-            var wraps = x > 0 && x + width > maxWidth;
-            if (wraps && !piece.Word && piece.Text.Trim().Length == 0)
+            var pieceText = piece.Text;
+            var width = MeasureWidth(pieceText);
+
+            // 单词后面紧跟的标点（"word," 里的逗号）不能落到下一行行首，换行时连在一起算。
+            var glue = 0;
+            if (piece.Word && p + 1 < pieces.Count && !pieces[p + 1].Word)
             {
-                y += lineHeight + 2;
-                x = 0;
-                continue;
+                var next = pieces[p + 1].Text;
+                var lead = 0;
+                while (lead < next.Length && !char.IsWhiteSpace(next[lead]))
+                    lead++;
+                if (lead > 0)
+                    glue = MeasureWidth(next[..lead]);
             }
 
-            if (wraps)
+            var attached = !piece.Word && pieceText.Length > 0 && !char.IsWhiteSpace(pieceText[0]) && p > 0 && pieces[p - 1].Word;
+            var wraps = !attached && x > 0 && x + width + glue > maxWidth;
+            if (wraps && !piece.Word)
             {
-                y += lineHeight + 2;
+                pieceText = pieceText.TrimStart();
+                y += lineStep;
+                x = 0;
+                if (pieceText.Length == 0)
+                    continue;
+                width = MeasureWidth(pieceText);
+            }
+            else if (wraps)
+            {
+                y += lineStep;
                 x = 0;
             }
 
-            Runs.Add(new Run(piece.Text, piece.Word, new Rectangle(x, y, width, lineHeight)));
+            Runs.Add(new Run(pieceText, piece.Word, new Rectangle(x, y, width, lineHeight)));
             x += width;
             if (x > maxX)
                 maxX = x;

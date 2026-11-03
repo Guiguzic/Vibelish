@@ -1,12 +1,13 @@
 namespace InputTranslate;
 
 /// <summary>
-/// 译文出来后自动列出这句里值得记的词，点一下再看详细释义。
+/// 译文出来后自动列出这句里值得记的词，点一下再看详细释义；鼠标停在词上显示为什么值得记。
 /// </summary>
 sealed class StudyStrip : Panel
 {
-    readonly Label _status = new();
+    readonly TextLabel _status = new() { SingleLine = true };
     readonly List<RoundButton> _chips = new();
+    readonly ToolTip _tips = new() { ShowAlways = true, InitialDelay = 300, AutoPopDelay = 8000 };
 
     public StudyStrip()
     {
@@ -14,20 +15,26 @@ sealed class StudyStrip : Panel
             ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
             | ControlStyles.ResizeRedraw,
             true);
-        BackColor = Color.FromArgb(17, 25, 40);
         TabStop = false;
         Visible = false;
-        _status.AutoSize = false;
-        _status.BackColor = Color.Transparent;
-        _status.ForeColor = Theme.Accent;
-        _status.Font = new Font("Microsoft YaHei UI", 8.5F);
-        _status.UseMnemonic = false;
         Controls.Add(_status);
+        ApplyTheme();
     }
 
     public bool Open { get; private set; }
 
     public event Action<string>? WordClicked;
+
+    public void ApplyTheme()
+    {
+        var p = Theme.Current;
+        BackColor = p.Card;
+        _status.ForeColor = p.Muted;
+        _status.Font = Theme.Card(8.5F);
+        foreach (var chip in _chips)
+            chip.Font = Theme.Card(8.5F);
+        Invalidate(true);
+    }
 
     public void Clear()
     {
@@ -48,13 +55,7 @@ sealed class StudyStrip : Panel
     public void ShowWords(IReadOnlyList<StudyWord> words)
     {
         ClearChips();
-        if (words.Count == 0)
-        {
-            Clear();
-            return;
-        }
-
-        _status.Text = "这句里";
+        _status.Text = "重点词";
         foreach (var word in words)
         {
             var english = word.English.Trim();
@@ -63,15 +64,17 @@ sealed class StudyStrip : Panel
             var chip = new RoundButton
             {
                 Text = word.Chinese.Length == 0 ? english : english + "  " + word.Chinese,
-                Font = new Font("Microsoft YaHei UI", 8.5F),
+                Font = Theme.Card(8.5F),
                 Tag = english,
-                Height = 28,
+                CornerRadius = 12,
             };
             chip.Click += (_, _) =>
             {
                 if (chip.Tag is string text && text.Length > 0)
                     WordClicked?.Invoke(text);
             };
+            if (word.Why.Length > 0)
+                _tips.SetToolTip(chip, word.Why);
             _chips.Add(chip);
             Controls.Add(chip);
         }
@@ -88,7 +91,7 @@ sealed class StudyStrip : Panel
 
     public int Arrange(int width, Func<int, int> scale)
     {
-        var chipHeight = scale(28);
+        var chipHeight = scale(26);
         var gap = scale(6);
         if (_chips.Count == 0)
         {
@@ -98,15 +101,14 @@ sealed class StudyStrip : Panel
             return height;
         }
 
-        var x = 0;
-        var y = 0;
-        var statusWidth = TextWidth(_status) + scale(8);
+        var statusWidth = _status.Measure(width).Width + scale(6);
         _status.Visible = true;
-        _status.SetBounds(0, scale(4), statusWidth, chipHeight);
-        x = statusWidth;
+        _status.SetBounds(0, 0, statusWidth, chipHeight);
+        var x = statusWidth;
+        var y = 0;
         foreach (var chip in _chips)
         {
-            var chipWidth = TextWidth(chip) + scale(16);
+            var chipWidth = Math.Min(width, chip.PreferredWidth(scale(10)));
             if (x > statusWidth && x + chipWidth > width)
             {
                 x = 0;
@@ -125,6 +127,7 @@ sealed class StudyStrip : Panel
     {
         foreach (var chip in _chips)
         {
+            _tips.SetToolTip(chip, null);
             Controls.Remove(chip);
             chip.Dispose();
         }
@@ -132,17 +135,15 @@ sealed class StudyStrip : Panel
         _chips.Clear();
     }
 
-    static int TextWidth(Control control)
-    {
-        return TextRenderer.MeasureText(
-            control.Text.Length == 0 ? " " : control.Text,
-            control.Font,
-            new Size(int.MaxValue, int.MaxValue),
-            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width;
-    }
-
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         e.Graphics.Clear(BackColor);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+            _tips.Dispose();
+        base.Dispose(disposing);
     }
 }

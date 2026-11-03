@@ -1,21 +1,32 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net9.0-windows</TargetFramework>
+    <!-- .NET Framework 4.8 随 Windows 10 1903+ / Windows 11 自带，安装包本身不需要用户先装 .NET 运行时。
+         装进去的主程序是自包含的单文件版。 -->
+    <TargetFramework>net48</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
+    <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>InputTranslateSetup</AssemblyName>
     <RootNamespace>InputTranslateSetup</RootNamespace>
     <ApplicationIcon>..\assets\app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <PlatformTarget>x64</PlatformTarget>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
+    <Product>输入翻译</Product>
+    <Description>输入翻译 安装程序</Description>
+    <GenerateSupportedRuntime>true</GenerateSupportedRuntime>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\UiKit.cs" Link="UiKit.cs" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="payload.zip" LogicalName="InputTranslateSetup.payload.zip" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="payload.zip" LogicalName="InputTranslateSetup.payload.zip" Condition="Exists('payload.zip')" />
     <EmbeddedResource Include="..\assets\app.ico" LogicalName="InputTranslateSetup.app.ico" />
   </ItemGroup>
 </Project>

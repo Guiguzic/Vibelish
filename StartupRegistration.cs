@@ -69,11 +69,41 @@ static class StartupRegistration
         }
     }
 
-    /// <summary>Repairs a stale path (e.g. the app was moved) while keeping autostart on.</summary>
+    /// <summary>登记的 exe 路径（去掉引号和参数）。</summary>
+    public static string RegisteredPath
+    {
+        get
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, false);
+                var value = (key?.GetValue(ValueName) as string ?? "").Trim();
+                if (value.StartsWith('"'))
+                {
+                    var end = value.IndexOf('"', 1);
+                    return end > 1 ? value[1..end] : value.Trim('"');
+                }
+
+                var space = value.IndexOf(" --", StringComparison.Ordinal);
+                return space > 0 ? value[..space] : value;
+            }
+            catch
+            {
+                return "";
+            }
+        }
+    }
+
+    /// <summary>登记的 exe 已经不在了（程序被挪走）才改成当前路径。
+    /// 只是从别处运行一份（比如开发时的 bin\Release）不能把已安装版本的自启动抢过来。</summary>
     public static void Refresh()
     {
         if (IsEnabled && !PointsToCurrentExecutable)
-            _ = SetEnabled(true, out _);
+        {
+            var registered = RegisteredPath;
+            if (registered.Length == 0 || !File.Exists(registered))
+                _ = SetEnabled(true, out _);
+        }
 
         // A previous uninstall may have scheduled "rmdir" at next logon. Once the app is
         // running again that cleanup must not delete the fresh installation.

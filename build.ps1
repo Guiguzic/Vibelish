@@ -7,32 +7,66 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
-function Build-NativeHook {
+# 新开的终端里 dotnet 不一定在 PATH 上。
+if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+    $dotnetDir = Join-Path $env:ProgramFiles 'dotnet'
+    if (Test-Path (Join-Path $dotnetDir 'dotnet.exe')) {
+        $env:PATH = $dotnetDir + ';' + $env:PATH
+    }
+    else {
+        throw 'dotnet not found. Install the .NET 9 SDK: https://dotnet.microsoft.com/download/dotnet/9.0'
+    }
+}
+
+$version = (Select-String -Path (Join-Path $root 'InputTranslate.csproj') -Pattern '<Version>([^<]+)</Version>').Matches.Groups[1].Value
+if (-not $version) { $version = '1.0.0' }
+Write-Host ('Version ' + $version)
+
+function Find-VcVars {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path $vswhere)) {
-        throw 'vswhere.exe not found. Install Visual Studio Build Tools with the C++ workload.'
+        return $null
     }
 
     $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     if (-not $vs) {
-        throw 'MSVC x64 tools not found (Microsoft.VisualStudio.Component.VC.Tools.x86.x64).'
+        return $null
     }
 
     $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-    $obj = Join-Path $env:TEMP 'inputtranslate-imehook.obj'
+    if (Test-Path $vcvars) { return $vcvars }
+    return $null
+}
+
+function Build-NativeHook {
     $dll = Join-Path $root 'native\imehook.dll'
+    $vcvars = Find-VcVars
+    if (-not $vcvars) {
+        $message = 'MSVC x64 tools not found (Visual Studio Build Tools, "Desktop development with C++").'
+        if (Test-Path $dll) {
+            Write-Warning ($message + ' Using the existing native\imehook.dll.')
+            return
+        }
+        if ($Publish) {
+            throw ($message + ' The installer needs native\imehook.dll.')
+        }
+        Write-Warning ($message + ' Building without the IME hook; IME text capture will be unavailable.')
+        return
+    }
+
+    $temp = Join-Path $env:TEMP 'inputtranslate-native'
+    New-Item -ItemType Directory -Force $temp | Out-Null
+    $obj = Join-Path $temp 'imehook.obj'
+    $lib = Join-Path $temp 'imehook.lib'
     $source = Join-Path $root 'native\imehook.cpp'
 
     Write-Host 'Building native\imehook.dll ...'
-    $command = "`"$vcvars`" >nul 2>&1 && cl /nologo /LD /O2 /EHsc /DUNICODE /D_UNICODE /Fo:`"$obj`" `"$source`" /link /OUT:`"$dll`" ole32.lib user32.lib imm32.lib"
+    $command = "`"$vcvars`" >nul 2>&1 && cl /nologo /LD /O2 /EHsc /DUNICODE /D_UNICODE /Fo:`"$obj`" `"$source`" /link /OUT:`"$dll`" /IMPLIB:`"$lib`" ole32.lib user32.lib imm32.lib"
     cmd /c $command
     if ($LASTEXITCODE -ne 0) {
         throw "native build failed with exit code $LASTEXITCODE"
     }
 
-    Remove-Item (Join-Path $root 'imehook.lib'), (Join-Path $root 'imehook.exp'),
-        (Join-Path $root 'inputtranslate-imehook.lib'), (Join-Path $root 'inputtranslate-imehook.exp') `
-        -Force -ErrorAction SilentlyContinue
     Write-Host ('native build ok: ' + (Get-Item $dll).Length + ' bytes')
 }
 
@@ -70,6 +104,8 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($Publish) {
     Write-Host 'Publishing single-file build to publish\ ...'
+    $publishDir = Join-Path $root 'publish'
+    if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
     dotnet publish InputTranslate.csproj -c Release -r win-x64 --self-contained true `
         -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true `
         -p:DebugType=None -p:DebugSymbols=false "-p:UiaRuntimeDir=$uiaRuntime" -o publish
@@ -77,15 +113,14 @@ if ($Publish) {
         throw "dotnet publish failed with exit code $LASTEXITCODE"
     }
 
-    # Older builds kept imehook.dll next to the exe; it now lives in hook\.
-    Remove-Item (Join-Path $root 'publish\imehook.dll'), (Join-Path $root 'publish\InputTranslate.pdb'),
-        (Join-Path $root 'publish\UIAutomationClient.dll'), (Join-Path $root 'publish\UIAutomationTypes.dll'),
-        (Join-Path $root 'publish\WindowsBase.dll') `
+    Remove-Item (Join-Path $publishDir 'InputTranslate.pdb'),
+        (Join-Path $publishDir 'UIAutomationClient.dll'), (Join-Path $publishDir 'UIAutomationTypes.dll'),
+        (Join-Path $publishDir 'WindowsBase.dll') `
         -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path (Join-Path $publishDir 'hook\imehook.dll'))) {
+        throw 'publish\hook\imehook.dll is missing.'
+    }
     Write-Host 'Done: publish\InputTranslate.exe'
-
-    $version = (Select-String -Path (Join-Path $root 'InputTranslate.csproj') -Pattern '<Version>([^<]+)</Version>').Matches.Groups[1].Value
-    if (-not $version) { $version = '1.0.0' }
 
     Write-Host 'Packing installer payload ...'
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -93,11 +128,12 @@ if ($Publish) {
     $payload = Join-Path $setupDir 'payload.zip'
     if (Test-Path $payload) { Remove-Item $payload -Force }
     [System.IO.Compression.ZipFile]::CreateFromDirectory(
-        (Join-Path $root 'publish'),
+        $publishDir,
         $payload,
         [System.IO.Compression.CompressionLevel]::Optimal,
         $false)
 
+    # 安装程序编到 .NET Framework 4.8（Windows 10/11 自带），用户不用先装 .NET 运行时。
     Write-Host 'Building installer ...'
     $installerDir = Join-Path $root 'installer'
     New-Item -ItemType Directory -Force $installerDir | Out-Null
@@ -105,17 +141,23 @@ if ($Publish) {
         Where-Object { $_.Extension -in '.msi', '.wxs', '.rtf' -or $_.Name -like 'InputTranslateSetup*' -or $_.Name -like 'InputTranslate-Setup-*' } |
         Remove-Item -Force
 
-    dotnet publish (Join-Path $setupDir 'InputTranslateSetup.csproj') -c Release -r win-x64 --self-contained false `
-        -p:PublishSingleFile=true -p:DebugType=None -p:DebugSymbols=false "-p:Version=$version" -o $installerDir
-    if ($LASTEXITCODE -ne 0) {
-        throw "setup publish failed with exit code $LASTEXITCODE"
-    }
+    $setupOut = Join-Path $env:TEMP 'inputtranslate-setup-build'
+    if (Test-Path $setupOut) { Remove-Item $setupOut -Recurse -Force }
+    try {
+        dotnet build (Join-Path $setupDir 'InputTranslateSetup.csproj') -c Release `
+            -p:DebugType=None -p:DebugSymbols=false "-p:Version=$version" -o $setupOut
+        if ($LASTEXITCODE -ne 0) {
+            throw "setup build failed with exit code $LASTEXITCODE"
+        }
 
-    $setupExe = Join-Path $installerDir 'InputTranslateSetup.exe'
-    $finalExe = Join-Path $installerDir ('InputTranslate-Setup-' + $version + '.exe')
-    Move-Item $setupExe $finalExe -Force
-    Remove-Item $payload -Force -ErrorAction SilentlyContinue
-    Write-Host ('Done: ' + $finalExe)
+        $finalExe = Join-Path $installerDir ('InputTranslate-Setup-' + $version + '.exe')
+        Copy-Item (Join-Path $setupOut 'InputTranslateSetup.exe') $finalExe -Force
+        Write-Host ('Done: ' + $finalExe + ' (' + [math]::Round((Get-Item $finalExe).Length / 1MB, 1) + ' MB)')
+    }
+    finally {
+        Remove-Item $payload -Force -ErrorAction SilentlyContinue
+        Remove-Item $setupOut -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 else {
     Write-Host 'Done: bin\Release\net9.0-windows10.0.19041.0\InputTranslate.exe'

@@ -13,6 +13,9 @@ static class Program
     [DllImport("user32.dll")]
     static extern bool SetForegroundWindow(IntPtr hwnd);
 
+    [DllImport("user32.dll")]
+    static extern IntPtr GetForegroundWindow();
+
     static int HookSelfTest()
     {
         var dll = ImeCapture.DllPath();
@@ -24,42 +27,90 @@ static class Program
             return 2;
         }
 
+        // 以前往记事本发字，Windows 11 的新记事本是打包应用，拿不到 Edit 窗口，测试总失败。
+        // 改成另开一个自己的小窗口当目标。
         capture.BeginSession();
-        var note = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("notepad.exe") { UseShellExecute = true });
-        if (note == null)
+        var target = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!, "--hook-target") { UseShellExecute = false });
+        if (target == null)
         {
-            Console.WriteLine("NO_NOTEPAD");
+            Console.WriteLine("NO_TARGET");
             return 3;
         }
 
-        note.WaitForInputIdle(4000);
-        var hwnd = IntPtr.Zero;
-        for (var i = 0; i < 30 && hwnd == IntPtr.Zero; i++)
+        try
         {
-            note.Refresh();
-            hwnd = note.MainWindowHandle;
-            if (hwnd == IntPtr.Zero) Thread.Sleep(100);
-        }
+            target.WaitForInputIdle(5000);
+            var hwnd = IntPtr.Zero;
+            for (var i = 0; i < 50 && hwnd == IntPtr.Zero; i++)
+            {
+                target.Refresh();
+                hwnd = target.MainWindowHandle;
+                if (hwnd == IntPtr.Zero) Thread.Sleep(100);
+            }
 
-        var edit = FindWindowEx(hwnd, IntPtr.Zero, "Edit", null);
-        if (edit == IntPtr.Zero) edit = hwnd;
-        _ = SetForegroundWindow(hwnd);
-        Thread.Sleep(200);
-        PostMessage(edit, 0x0102, (IntPtr)'你', IntPtr.Zero);
-        PostMessage(edit, 0x0102, (IntPtr)'好', IntPtr.Zero);
-        Thread.Sleep(600);
-        var text = capture.Read().Committed;
-        Console.WriteLine("GOT=" + text);
-        try { note.Kill(); } catch { }
-        return text.Contains('你') && text.Contains('好') ? 0 : 1;
+            var edit = FindWindowEx(hwnd, IntPtr.Zero, null, null);
+            if (edit == IntPtr.Zero) edit = hwnd;
+            _ = SetForegroundWindow(hwnd);
+            Thread.Sleep(300);
+            if (GetForegroundWindow() != hwnd)
+            {
+                // 钩子只记前台进程里的输入；从后台启动的测试抢不到前台。
+                Console.WriteLine("NOT_FOREGROUND（请在前台的终端里运行）");
+                return 4;
+            }
+
+            PostMessage(edit, 0x0102, (IntPtr)'你', IntPtr.Zero);
+            PostMessage(edit, 0x0102, (IntPtr)'好', IntPtr.Zero);
+            Thread.Sleep(600);
+            var text = capture.Read().Committed;
+            Console.WriteLine("GOT=" + text);
+            return text.Contains('你') && text.Contains('好') ? 0 : 1;
+        }
+        finally
+        {
+            try { target.Kill(); } catch { }
+        }
+    }
+
+    /// <summary>--selftest-hook 的目标窗口：一个文本框，15 秒后自己关掉。</summary>
+    static int HookTarget()
+    {
+        Application.EnableVisualStyles();
+        using var form = new Form
+        {
+            Text = "InputTranslate hook test",
+            StartPosition = FormStartPosition.CenterScreen,
+            ClientSize = new Size(360, 120),
+            TopMost = true,
+        };
+        var box = new TextBox { Multiline = true, Dock = DockStyle.Fill };
+        form.Controls.Add(box);
+        form.Shown += (_, _) =>
+        {
+            form.Activate();
+            box.Focus();
+        };
+        var close = new System.Windows.Forms.Timer { Interval = 15000 };
+        close.Tick += (_, _) => form.Close();
+        close.Start();
+        Application.Run(form);
+        return 0;
     }
 
     static string? CardSelfTest()
     {
         using var form = new OverlayForm();
-        form.ShowEnglish("The policy was implemented.", "");
+        form.BeginListening("考研", "请开始输入中文…");
+        form.UpdateSource("政策已经落实了。", Rectangle.Empty);
+        form.ShowTranslation("政策已经落实了。", "The policy was implemented.", "test");
         if (form.EnglishText != "The policy was implemented.")
             return "english";
+        form.UpdateSource("政策已经落实了吗？", Rectangle.Empty);
+        if (form.EnglishText.Length != 0)
+            return "stale english should not be copyable";
+        form.UpdateSource("政策已经落实了。", Rectangle.Empty);
+        if (form.EnglishText != "The policy was implemented.")
+            return "english restored";
         var before = form.Height;
         form.BeginWordLookup("implemented");
         if (!form.GlossOpen || form.GlossWord != "implemented")
@@ -90,7 +141,121 @@ static class Program
         form.CloseGloss();
         if (form.GlossOpen || form.Height >= openHeight)
             return "close " + openHeight + " -> " + form.Height;
+        form.ShowTranslationError("接口超时");
+        form.FinishSession();
+        if (form.EnglishText != "The policy was implemented.")
+            return "finish keeps english";
+
+        if (!HotkeySpec.TryParse("ctrl+alt+t", out var spec) || spec.ToString() != "Ctrl+Alt+T")
+            return "hotkey parse";
+        if (HotkeySpec.TryParse("Shift+A", out _) || HotkeySpec.TryParse("Ctrl+Alt", out _))
+            return "hotkey invalid accepted";
+        if (!HotkeySpec.TryParse("Ctrl+Shift+F9", out var f9) || f9.Key != Keys.F9)
+            return "hotkey f9";
+        if (Translator.CleanModelText("<think>hmm</think>\n\"Hello.\"") != "Hello.")
+            return "clean model text";
+        if (!AppConfig.IsLocalEndpoint("http://192.168.1.40/v1") || AppConfig.IsLocalEndpoint("https://api.deepseek.com/v1"))
+            return "local endpoint";
         return null;
+    }
+
+    /// <summary>不启动托盘，直接把卡片或设置窗口摆出来，方便截图检查界面。
+    /// 给了 shot 路径就在显示后截一张图存下来再退出。</summary>
+    static int Preview(string what, string theme, string? shot)
+    {
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        Theme.Apply(theme, "normal");
+        if (what is "settings" or "settings-end")
+        {
+            var config = AppConfig.Load();
+            using var settings = new SettingsForm(config, "正在使用 " + config.Hotkey + "。");
+            if (what == "settings-end")
+                settings.Shown += (_, _) => settings.ScrollToEnd();
+            if (shot != null)
+                CaptureLater(settings, shot);
+            Application.Run(settings);
+            return 0;
+        }
+
+        using var card = new OverlayForm();
+        card.ApplyTheme();
+        var close = new System.Windows.Forms.Timer { Interval = 60000 };
+        close.Tick += (_, _) => Application.ExitThread();
+        close.Start();
+        if (shot != null)
+            CaptureLater(card, shot);
+        card.CloseRequested += (_, _) => Application.ExitThread();
+        switch (what)
+        {
+            case "idle":
+                card.ShowIdle("输入翻译", "按 Ctrl+Alt+T 开始，输入中文，按 Enter 完成", OverlayForm.CardPlace.TopCenter);
+                break;
+            case "listening":
+                card.BeginListening("考研", "请开始输入中文…  Esc 取消");
+                card.UpdateSource("我今天想去图书馆复习英语", Rectangle.Empty);
+                card.SetTranslating(true);
+                break;
+            case "error":
+                card.BeginListening("考研", "请开始输入中文…  Esc 取消");
+                card.UpdateSource("我今天想去图书馆复习英语", Rectangle.Empty);
+                card.ShowTranslationError("接口返回 401（密钥不对或没有权限）：Incorrect API key provided");
+                break;
+            default:
+                card.BeginListening("考研", "请开始输入中文…  Esc 取消");
+                card.ShowTranslation(
+                    "虽然准备考研很辛苦，但我相信坚持下去一定会有收获。",
+                    "Arduous as preparation for the postgraduate entrance examination may be, I remain convinced that perseverance will ultimately yield its rewards.",
+                    "deepseek-chat · 考研");
+                card.ShowStudy(new[]
+                {
+                    new StudyWord("arduous", "艰辛的", "比 hard 更书面"),
+                    new StudyWord("remain convinced", "始终相信", "替代 believe"),
+                    new StudyWord("yield", "带来", "yield rewards 固定搭配"),
+                });
+                if (what == "gloss")
+                {
+                    card.BeginWordLookup("yield");
+                    card.ShowWordGloss(new WordGloss(true, "yield", "yield", "/jiːld/",
+                        new[]
+                        {
+                            new WordSense("v.", "产生；带来（结果、收益）", true, "这里指坚持最终会带来回报。"),
+                            new WordSense("v.", "屈服；让步", false, "yield to pressure 屈服于压力"),
+                            new WordSense("n.", "产量；收益", false, "crop yield 作物产量"),
+                        },
+                        "yield = 给出，引申为产出、让出", "", true, ""));
+                }
+
+                card.SetStatus("已复制英文", OverlayForm.StatusKind.Success);
+                break;
+        }
+
+        Application.Run();
+        return 0;
+    }
+
+    static void CaptureLater(Form form, string path)
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = 1200 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            try
+            {
+                var margin = Theme.Scale(form, 20);
+                var bounds = Rectangle.Inflate(form.Bounds, margin, margin);
+                using var bitmap = new Bitmap(bounds.Width, bounds.Height);
+                using (var g = Graphics.FromImage(bitmap))
+                    g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+                bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            }
+            finally
+            {
+                Application.ExitThread();
+            }
+        };
+        timer.Start();
     }
 
     const int AttachParentProcess = -1;
@@ -116,6 +281,9 @@ static class Program
             Console.WriteLine(failure == null ? "ok" : "FAIL " + failure);
             return failure == null ? 0 : 1;
         }
+
+        if (args.Length >= 1 && args[0] == "--hook-target")
+            return HookTarget();
 
         if (args.Length >= 1 && args[0] == "--selftest-hook")
         {
@@ -209,11 +377,23 @@ static class Program
         if (args.Length >= 1 && args[0] == "--translate")
         {
             _ = AttachConsole(AttachParentProcess);
+            if (args.Length < 2)
+            {
+                Console.WriteLine("用法：InputTranslate.exe --translate 要翻译的中文");
+                return 2;
+            }
+
             var translator = new Translator(AppConfig.Load());
             var result = translator.TranslateAsync(args[1], CancellationToken.None).GetAwaiter().GetResult();
             Console.WriteLine(result.Ok ? result.Text : "ERROR " + result.Detail);
             return result.Ok ? 0 : 1;
         }
+
+        if (args.Length >= 1 && args[0] == "--preview")
+            return Preview(
+                args.Length >= 2 ? args[1] : "card",
+                args.Length >= 3 ? args[2] : "system",
+                args.Length >= 4 ? args[3] : null);
 
         if (args.Length >= 1 && args[0] == "--uninstall")
         {
@@ -268,13 +448,26 @@ static class Program
 
 static class TraceLog
 {
+    const long MaxBytes = 1024 * 1024;
+    static readonly object Gate = new();
+
+    public static string FilePath =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "InputTranslate", "run.log");
+
+    /// <summary>只记事件和长度，不记原文。超过 1 MB 换成 run.old.log。</summary>
     public static void Note(string line)
     {
         try
         {
-            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "InputTranslate", "run.log");
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.AppendAllText(path, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss ") + line + Environment.NewLine);
+            lock (Gate)
+            {
+                var path = FilePath;
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                var info = new FileInfo(path);
+                if (info.Exists && info.Length > MaxBytes)
+                    File.Move(path, Path.Combine(info.DirectoryName!, "run.old.log"), true);
+                File.AppendAllText(path, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss ") + line + Environment.NewLine);
+            }
         }
         catch
         {
@@ -286,6 +479,7 @@ static class TraceLog
     {
         if (string.IsNullOrEmpty(text))
             return "";
+        text = TerminalReader.RedactSecrets(text);
         var cut = text.IndexOf("sk-", StringComparison.Ordinal);
         if (cut >= 0)
             text = text[..cut] + "sk-redacted";

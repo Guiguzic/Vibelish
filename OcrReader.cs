@@ -154,10 +154,31 @@ static class OcrReader
         public int Bottom;
     }
 
+    static OcrEngine? _engine;
+    static bool _engineTried;
+
+    // 识别器创建一次就够了；以前每 600 毫秒新建一个。
+    static OcrEngine? Engine()
+    {
+        if (_engineTried)
+            return _engine;
+        _engineTried = true;
+        try
+        {
+            _engine = OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language("zh-Hans"))
+                ?? OcrEngine.TryCreateFromUserProfileLanguages();
+        }
+        catch
+        {
+            _engine = null;
+        }
+
+        return _engine;
+    }
+
     static async Task<string> RecognizeAsync(Bitmap bitmap)
     {
-        var engine = OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language("zh-Hans"))
-            ?? OcrEngine.TryCreateFromUserProfileLanguages();
+        var engine = Engine();
         if (engine == null)
             return "";
 

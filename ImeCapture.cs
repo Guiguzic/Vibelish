@@ -155,7 +155,16 @@ sealed class ImeCapture : IDisposable
     void WithLock(Action action)
     {
         if (_view == null || _mutex == null) return;
-        if (!_mutex.WaitOne(200)) return;
+        try
+        {
+            if (!_mutex.WaitOne(200)) return;
+        }
+        catch (AbandonedMutexException)
+        {
+            // 被注入的程序拿着锁退出了。锁已经归我们，照常用完再释放；
+            // 否则异常一抛，锁永远不还，钩子那边从此写不进共享内存。
+        }
+
         try { action(); }
         finally { _mutex.ReleaseMutex(); }
     }
