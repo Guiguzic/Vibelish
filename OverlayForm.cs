@@ -78,9 +78,13 @@ sealed class OverlayForm : Form
     string _glossWord = "";
     bool _glossOpen;
 
-    // 英译中：译文是中文，下面再放一句更地道的英文。null 表示没有评价（免费引擎），空字符串表示原句已经很地道。
-    bool _toChinese;
-    bool _sourceLatin;
+    // 母语和在学的语言（设置里选），决定字体、按钮上的字、能不能点词。
+    Language _native = Languages.Find("zh-CN");
+    Language _target = Languages.Find("en");
+
+    // 反向（在学的语言 → 母语）：译文是母语，下面再放一句更地道的说法。null 表示没有评价（免费引擎），空字符串表示原句已经很地道。
+    bool _toNative;
+    bool _sourceIsTarget;
     string? _betterText;
     bool _studyOpen;
     bool _dwmCorners;
@@ -141,8 +145,7 @@ sealed class OverlayForm : Form
 
         _tips.SetToolTip(_settings, "设置");
         _tips.SetToolTip(_close, "关闭（听写中会结束本次）");
-        _tips.SetToolTip(_write, "用英文替换输入框里的内容");
-        _tips.SetToolTip(_speak, "朗读英文");
+        UpdateTips();
 
         _copy.Click += (_, _) => CopyRequested?.Invoke(this, EventArgs.Empty);
         _write.Click += (_, _) => WriteRequested?.Invoke(this, EventArgs.Empty);
@@ -178,24 +181,24 @@ sealed class OverlayForm : Form
 
     public string SourceText { get; private set; } = "";
 
-    /// <summary>当前有效的译文（中译英是英文，英译中是中文）。正在更新（旧译文变灰）或还在逐字输出时为空，复制 / 写入都不可用。</summary>
+    /// <summary>当前有效的译文（正向是在学的语言，反向是母语）。正在更新（旧译文变灰）或还在逐字输出时为空，复制 / 写入都不可用。</summary>
     public string ResultText => _stale || _streaming ? "" : _resultShown;
 
-    /// <summary>当前显示的是英译中（译文是中文）。</summary>
-    public bool ToChinese => _toChinese;
+    /// <summary>当前显示的是反向翻译（译文是母语）。</summary>
+    public bool ToNative => _toNative;
 
-    /// <summary>查词、按义项改写时用的英文句子：中译英是译文；英译中是更地道的说法，没有就用原文。</summary>
-    public string LookupSentence => !_toChinese ? ResultText
+    /// <summary>查词、按义项改写用的那句外语：正向是译文；反向是更地道的说法，没有就用原文。</summary>
+    public string LookupSentence => !_toNative ? ResultText
         : ResultText.Length == 0 ? ""
         : _betterText is { Length: > 0 } better ? better : SourceText;
 
-    /// <summary>「写入输入框」写的英文：中译英是译文；英译中是更地道的说法，没有就不能写。</summary>
-    public string WriteText => ResultText.Length == 0 ? "" : _toChinese ? _betterText ?? "" : ResultText;
+    /// <summary>「写入输入框」写的外语：正向是译文；反向是更地道的说法，没有就不能写。</summary>
+    public string WriteText => ResultText.Length == 0 ? "" : _toNative ? _betterText ?? "" : ResultText;
 
-    /// <summary>朗读按钮读的英文。</summary>
+    /// <summary>朗读按钮读的外语。</summary>
     public string SpeakText => LookupSentence;
 
-    bool BetterVisible => _toChinese && _betterText != null && ResultText.Length > 0;
+    bool BetterVisible => _toNative && _betterText != null && ResultText.Length > 0;
 
     /// <summary>鼠标停在卡片上（自动收起时要等一等）。</summary>
     public bool PointerOver => Visible && Bounds.Contains(Cursor.Position);
@@ -282,27 +285,38 @@ sealed class OverlayForm : Form
         Invalidate(true);
     }
 
-    /// <summary>英文用 Segoe，中文用雅黑：原文和译文的字体跟着翻译方向换。</summary>
+    /// <summary>大号的译文：拉丁、西里尔字母用 Segoe 半粗，中文、日文、韩文、泰文用各自的字体。</summary>
+    static Font Large(Language language, float size) =>
+        language.Font.Length == 0 ? Theme.CardEnglish(size) : Theme.CardText(language.Font, size - 1F);
+
+    /// <summary>原文和译文的字体跟着翻译方向、跟着是哪种语言换。</summary>
     void ApplyFonts()
     {
-        _english.Font = _toChinese ? Theme.Card(14F) : Theme.CardEnglish(15F);
-        _source.Font = _sourceLatin ? Theme.CardLatin(10.5F) : Theme.Card(10F);
-        _better.Font = Theme.CardEnglish(12.5F);
+        _english.Font = Large(_toNative ? _native : _target, 15F);
+        _source.Font = Theme.CardText((_sourceIsTarget ? _target : _native).Font, 10.25F);
+        _better.Font = Large(_target, 12.5F);
         _betterCaption.Font = Theme.Card(8.25F);
+        _study.SetFonts(_target.Font, _native.Font);
+    }
+
+    void UpdateTips()
+    {
+        _write.Text = _toNative ? "用地道说法替换" : "写入输入框";
+        _tips.SetToolTip(_write, _toNative ? "用更地道的说法替换输入框里的" + _target.Name : "用" + _target.Name + "替换输入框里的内容");
+        _tips.SetToolTip(_speak, "朗读" + _target.Name);
     }
 
     /// <summary>换了翻译方向：字体和「写入」按钮跟着变。</summary>
-    void SetDirection(bool toChinese)
+    void SetDirection(bool toNative)
     {
-        if (_toChinese == toChinese)
+        if (_toNative == toNative)
             return;
-        _toChinese = toChinese;
+        _toNative = toNative;
         ApplyFonts();
-        _write.Text = toChinese ? "用地道说法替换" : "写入输入框";
-        _tips.SetToolTip(_write, toChinese ? "用更地道的说法替换输入框里的英文" : "用英文替换输入框里的内容");
+        UpdateTips();
     }
 
-    /// <summary>卡片上显示哪些东西、放在哪里。</summary>
+    /// <summary>卡片上显示哪些东西、放在哪里，母语和在学的是哪两种语言。</summary>
     public void ApplyOptions(AppConfig config)
     {
         _showSource = config.ShowSource;
@@ -312,6 +326,10 @@ sealed class OverlayForm : Form
         _showSpeak = config.ShowSpeak;
         _position = config.CardPosition;
         _study.Style = config.StudyStyle;
+        _native = config.Native;
+        _target = config.Target;
+        ApplyFonts();
+        UpdateTips();
         if (IsHandleCreated && Visible)
             Relayout();
     }
@@ -326,7 +344,7 @@ sealed class OverlayForm : Form
         _resultShown = "";
         _translatedSource = "";
         _betterText = null;
-        _sourceLatin = false;
+        _sourceIsTarget = false;
         ApplyFonts();
         _stale = false;
         _streaming = false;
@@ -349,7 +367,7 @@ sealed class OverlayForm : Form
         _resultShown = "";
         _translatedSource = "";
         _betterText = null;
-        _sourceLatin = false;
+        _sourceIsTarget = false;
         ApplyFonts();
         _stale = false;
         _streaming = false;
@@ -374,15 +392,15 @@ sealed class OverlayForm : Form
     }
 
     /// <summary>输入框里的内容变了。旧译文先变灰留着，避免卡片忽大忽小。</summary>
-    /// <param name="latin">原文是英文（英译中），用英文字体显示。</param>
-    public void UpdateSource(string source, Rectangle anchor, bool latin = false)
+    /// <param name="sourceIsTarget">原文是在学的语言（反向），用那种语言的字体显示。</param>
+    public void UpdateSource(string source, Rectangle anchor, bool sourceIsTarget = false)
     {
         if (SourceText == source)
             return;
         SourceText = source;
-        if (_sourceLatin != latin)
+        if (_sourceIsTarget != sourceIsTarget)
         {
-            _sourceLatin = latin;
+            _sourceIsTarget = sourceIsTarget;
             ApplyFonts();
         }
 
@@ -414,7 +432,7 @@ sealed class OverlayForm : Form
     }
 
     /// <summary>流式输出：译文一段一段到，先显示出来，结束后再调 <see cref="ShowTranslation"/>。</summary>
-    public void ShowPartial(string source, string text, bool toChinese = false)
+    public void ShowPartial(string source, string text, bool toNative = false)
     {
         if (text.Length == 0)
             return;
@@ -422,8 +440,8 @@ sealed class OverlayForm : Form
         _translatedSource = source;
         _resultShown = text;
         _betterText = null;
-        _sourceLatin = toChinese;
-        SetDirection(toChinese);
+        _sourceIsTarget = toNative;
+        SetDirection(toNative);
         ApplyFonts();
         _stale = false;
         _streaming = true;
@@ -434,16 +452,16 @@ sealed class OverlayForm : Form
         Present(CardPlace.Stay, Rectangle.Empty);
     }
 
-    /// <param name="toChinese">英译中：<paramref name="text"/> 是中文。</param>
-    /// <param name="better">英译中时更地道的英文；空字符串表示原句已经很地道，null 表示没有评价。</param>
-    public void ShowTranslation(string source, string text, string detail, bool toChinese = false, string? better = null)
+    /// <param name="toNative">反向：<paramref name="text"/> 是母语。</param>
+    /// <param name="better">反向时更地道的说法；空字符串表示原句已经很地道，null 表示没有评价。</param>
+    public void ShowTranslation(string source, string text, string detail, bool toNative = false, string? better = null)
     {
         SourceText = source;
         _translatedSource = source;
         _resultShown = text;
-        _betterText = toChinese ? better : null;
-        _sourceLatin = toChinese;
-        SetDirection(toChinese);
+        _betterText = toNative ? better : null;
+        _sourceIsTarget = toNative;
+        SetDirection(toNative);
         ApplyFonts();
         _stale = false;
         _streaming = false;
@@ -457,10 +475,10 @@ sealed class OverlayForm : Form
         Present(CardPlace.Stay, Rectangle.Empty);
     }
 
-    /// <summary>英译中时在释义里「采用这句」：换掉更地道的说法。</summary>
+    /// <summary>反向时在释义里「采用这句」：换掉更地道的说法。</summary>
     public void AdoptBetter(string english)
     {
-        if (!_toChinese || english.Trim().Length == 0)
+        if (!_toNative || english.Trim().Length == 0)
             return;
         _betterText = english.Trim();
         HideGloss();
@@ -713,17 +731,18 @@ sealed class OverlayForm : Form
         _english.English = _resultShown;
         _english.ForeColor = _stale ? p.Dim : p.Text;
         _english.Loading = _resultShown.Length == 0 && _translating;
-        _english.LookupEnabled = hasResult && _clickLookup && !_toChinese && HasLatinWord(_resultShown);
+        // 中文、日文、泰文这类不用空格分词的语言没法在句子里点词，从重点词里点。
+        _english.LookupEnabled = hasResult && _clickLookup && !_toNative && _target.Spaced && HasWord(_resultShown);
         _better.English = _betterText ?? "";
         _better.ForeColor = p.Text;
-        _better.LookupEnabled = BetterVisible && _clickLookup && HasLatinWord(_betterText ?? "");
+        _better.LookupEnabled = BetterVisible && _clickLookup && _target.Spaced && HasWord(_betterText ?? "");
         _betterCaption.ForeColor = _betterText is { Length: 0 } ? p.Success : p.Dim;
         _copy.Enabled = hasResult;
         _write.Enabled = WriteText.Length > 0;
         _speak.Enabled = SpeakText.Length > 0;
     }
 
-    /// <summary>卡片上有可以点的英文单词。</summary>
+    /// <summary>卡片上有可以点的外语单词。</summary>
     bool CanLookup => _english.LookupEnabled || _better.LookupEnabled;
 
     void Relayout()
@@ -739,7 +758,7 @@ sealed class OverlayForm : Form
         Invalidate(true);
     }
 
-    static bool HasLatinWord(string text)
+    static bool HasWord(string text)
     {
         foreach (var piece in WordStudy.Split(text))
         {
@@ -791,7 +810,7 @@ sealed class OverlayForm : Form
         var showBetterText = showBetter && _betterText!.Length > 0;
         var hint = HintText();
 
-        _betterCaption.Text = showBetterText ? "更地道的说法" : "这句英文已经很地道，不用改";
+        _betterCaption.Text = showBetterText ? "更地道的说法" : "这句" + _target.Name + "已经很地道，不用改";
         _betterCaption.Visible = showBetter;
         _better.Visible = showBetterText;
         _source.Text = sourceText;
@@ -804,9 +823,9 @@ sealed class OverlayForm : Form
         _study.Visible = showStudy;
         _gloss.Visible = showGloss;
         _copy.Visible = showFooter;
-        _write.Visible = showFooter && (!_toChinese || WriteText.Length > 0);
+        _write.Visible = showFooter && (!_toNative || WriteText.Length > 0);
         _copy.Variant = _write.Visible ? ButtonVariant.Secondary : ButtonVariant.Primary;
-        _speak.Visible = showFooter && _showSpeak && (!_toChinese || SpeakText.Length > 0);
+        _speak.Visible = showFooter && _showSpeak && (!_toNative || SpeakText.Length > 0);
         var meta = _status.Length > 0 ? _status : _showEngine && !_stale && !_streaming ? _detail : "";
         _meta.Text = meta;
         _meta.Visible = showFooter && meta.Length > 0;
@@ -851,7 +870,7 @@ sealed class OverlayForm : Form
             y += height;
         }
 
-        // 英译中：中文意思下面是更地道的英文，可以点词查义、朗读、一键替换。
+        // 反向：母语的意思下面是更地道的说法，可以点词查义、朗读、一键替换。
         if (showBetter)
         {
             y += Sc(12);

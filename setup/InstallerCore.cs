@@ -12,7 +12,7 @@ static class InstallerCore
 {
     public const string ProductName = "Vibelish";
     public const string Publisher = "Guiguzic";
-    public const string Tagline = "写 prompt 的时候，顺手学英语";
+    public const string Tagline = "写 prompt 的时候，顺手学外语";
 
     // 1.2.0 以前叫「输入翻译」（InputTranslate）。装新版时把旧版的程序、快捷方式和启动项清掉，
     // 设置文件留着，新版第一次启动会自己搬过去。

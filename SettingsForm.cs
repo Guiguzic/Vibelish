@@ -20,7 +20,7 @@ sealed class SettingsForm : Form
         ("Ollama（本机）", "http://localhost:11434/v1", "qwen2.5:7b"),
     ];
 
-    static readonly string[] DirectionKeys = ["auto", "zh2en", "en2zh"];
+    static readonly string[] DirectionKeys = ["auto", "forward", "reverse"];
     static readonly string[] EngineKeys = ["auto", "openai", "transmart", "mymemory", "google"];
     static readonly string[] LevelKeys = ["kaoyan", "cet6", "plain"];
     static readonly string[] ThemeKeys = ["system", "light", "dark"];
@@ -49,6 +49,8 @@ sealed class SettingsForm : Form
     SettingsRow? _enabledRow;
 
     // 翻译
+    readonly PopupButton _nativeLanguage = new(Languages.All.Select(l => l.Label).ToArray());
+    readonly PopupButton _targetLanguage = new(Languages.All.Select(l => l.Label).ToArray());
     readonly SegmentedControl _direction = new("自动", "中译英", "英译中");
     readonly PopupButton _engine = new("自动", "只用大模型", "腾讯交互翻译", "MyMemory", "Google");
     readonly SegmentedControl _level = new("考研", "六级", "日常");
@@ -58,6 +60,11 @@ sealed class SettingsForm : Form
     SettingsRow? _directionRow;
     SettingsRow? _engineRow;
     SettingsRow? _levelRow;
+    SettingsRow? _autoWriteRow;
+    SettingsRow? _lookupRow;
+    int _nativeIndex;
+    int _targetIndex;
+    bool _swapping;
 
     // 大模型
     readonly PopupButton _provider = new(Providers.Select(p => p.Name).ToArray());
@@ -226,14 +233,17 @@ sealed class SettingsForm : Form
         general.AddNote("原文和译文只显示在卡片里，不写进日志；最近翻译只保存在内存里，退出就清空。密码框会自动跳过。");
 
         var translate = AddPage(Glyphs.Globe, "翻译");
-        var engine = translate.AddGroup("");
-        _directionRow = engine.AddRow("翻译方向", "", _direction);
+        var languages = translate.AddGroup("语言");
+        languages.AddRow("我的母语", "卡片上的意思、释义都用这种语言", _nativeLanguage);
+        languages.AddRow("我在学", "打母语翻成这种语言；重点词、查词、朗读也用它", _targetLanguage);
+        _directionRow = languages.AddRow("翻译方向", "", _direction);
+        var engine = translate.AddGroup("引擎");
         _engineRow = engine.AddRow("翻译引擎", "", _engine);
-        _levelRow = engine.AddRow("英文难度", "只对大模型生效。中译英是译文的难度，英译中是「更地道的说法」的难度。考研：高级词汇 + 复杂句式，像经济学人", _level);
+        _levelRow = engine.AddRow("难度", "", _level);
         engine.AddRow("开始翻译", "输完停顿多久开始翻译：快 0.35 秒 · 适中 0.6 秒 · 稳 1 秒。打出句号、逗号会立刻翻译", _pause);
         var after = translate.AddGroup("译完以后");
         after.AddRow("自动复制译文", "会覆盖剪贴板", _autoCopy);
-        after.AddRow("自动写入输入框", "只在中译英、并且整段就是输入框全部内容时写入", _autoWrite);
+        _autoWriteRow = after.AddRow("自动写入输入框", "", _autoWrite);
 
         var model = AddPage(Glyphs.Bolt, "大模型");
         var api = model.AddGroup("OpenAI 兼容接口");
@@ -269,7 +279,7 @@ sealed class SettingsForm : Form
         var study = words.AddGroup("重点词");
         study.AddRow("显示重点词", "译完挑出值得记的词，和译文一起生成，不多等（需要大模型接口）", _study);
         study.AddRow("显示方式", "「详细」会把为什么值得记也写出来", _studyStyle);
-        study.AddRow("点英文单词查释义", "看义项、音标、记忆点，还能按某个意思改一句", _clickLookup);
+        _lookupRow = study.AddRow("点单词查释义", "", _clickLookup);
         var speak = words.AddGroup("朗读");
         _speakRow = speak.AddRow("显示朗读按钮", "", _showSpeak);
         speak.AddRow("查词时自动朗读单词", "", _speakOnLookup);
@@ -280,7 +290,7 @@ sealed class SettingsForm : Form
         info.AddRow("版本", "", new TextLabel { Text = typeof(SettingsForm).Assembly.GetName().Version?.ToString(3) ?? "", SingleLine = true, AlignRight = true, Size = new Size(Theme.Scale(this, 120), Theme.Scale(this, 22)) });
         info.AddRow("配置文件夹", AppConfig.Directory, LinkButton("打开", () => OpenFolder(AppConfig.Directory)));
         info.AddRow("运行日志", "只记事件和长度，不记原文", LinkButton("查看", () => OpenFile(TraceLog.FilePath)));
-        about.AddNote("Vibelish：写 prompt 的时候，顺手学英语。打中文翻成考研难度的英文；直接写英文，就给出中文意思和更地道的说法。热键开始，Enter 完成，Esc 取消；点英文单词可以查释义。");
+        about.AddNote("Vibelish：写 prompt 的时候，顺手学外语。打母语翻成在学的语言；直接用在学的语言写，就给出母语意思和更地道的说法。默认中文学英文（考研难度），也可以在「翻译」里换成日文、法文、西班牙文等。热键开始，Enter 完成，Esc 取消；点单词可以查释义。");
     }
 
     SettingsPage AddPage(string glyph, string title)
@@ -307,6 +317,10 @@ sealed class SettingsForm : Form
 
     void LoadValues(AppConfig config, string hotkeyStatus)
     {
+        _nativeLanguage.SelectedIndex = Math.Max(0, Languages.IndexOf(config.NativeLanguage));
+        _targetLanguage.SelectedIndex = Math.Max(0, Languages.IndexOf(config.TargetLanguage));
+        _nativeIndex = _nativeLanguage.SelectedIndex;
+        _targetIndex = _targetLanguage.SelectedIndex;
         _direction.SelectedIndex = Math.Max(0, Array.IndexOf(DirectionKeys, config.Direction));
         _engine.SelectedIndex = Math.Max(0, Array.IndexOf(EngineKeys, config.Engine));
         _level.SelectedIndex = Math.Max(0, Array.IndexOf(LevelKeys, config.EnglishLevel));
@@ -337,14 +351,15 @@ sealed class SettingsForm : Form
         _showSpeak.Checked = config.ShowSpeak;
         _speakOnLookup.Checked = config.SpeakOnLookup;
         _speed.SelectedIndex = Math.Max(0, Array.IndexOf(SpeedKeys, config.SpeakSpeed));
-        if (_speakRow != null)
-            _speakRow.Subtitle = Speech.Available ? "用 Windows 自带的英文语音" : Speech.MissingHint;
+        UpdateLanguageText();
         UpdateEngineHint();
     }
 
     public AppConfig ReadConfig()
     {
         var next = _original.Clone();
+        next.NativeLanguage = Languages.All[_nativeLanguage.SelectedIndex].Code;
+        next.TargetLanguage = Languages.All[_targetLanguage.SelectedIndex].Code;
         next.Direction = DirectionKeys[_direction.SelectedIndex];
         next.Engine = EngineKeys[_engine.SelectedIndex];
         next.EnglishLevel = LevelKeys[_level.SelectedIndex];
@@ -385,6 +400,8 @@ sealed class SettingsForm : Form
         foreach (var popup in new[] { _engine, _position, _autoHide })
             popup.SelectedIndexChanged += (_, _) => Changed(immediate: true);
         _accent.SelectedChanged += (_, _) => Changed(immediate: true);
+        _nativeLanguage.SelectedIndexChanged += (_, _) => LanguageChanged(native: true);
+        _targetLanguage.SelectedIndexChanged += (_, _) => LanguageChanged(native: false);
         _provider.SelectedIndexChanged += (_, _) => ApplyProvider();
         _baseUrl.TextChanged += (_, _) =>
         {
@@ -403,6 +420,55 @@ sealed class SettingsForm : Form
             _debounce.Stop();
             Commit();
         };
+    }
+
+    /// <summary>母语和在学的语言选成同一种时，两边对调。</summary>
+    void LanguageChanged(bool native)
+    {
+        if (_loading || _swapping)
+            return;
+        if (_nativeLanguage.SelectedIndex == _targetLanguage.SelectedIndex)
+        {
+            _swapping = true;
+            if (native)
+                _targetLanguage.SelectedIndex = _nativeIndex;
+            else
+                _nativeLanguage.SelectedIndex = _targetIndex;
+            _swapping = false;
+        }
+
+        _nativeIndex = _nativeLanguage.SelectedIndex;
+        _targetIndex = _targetLanguage.SelectedIndex;
+        UpdateLanguageText();
+        Changed(immediate: true);
+    }
+
+    /// <summary>方向、难度这些叫法跟着语言对变：中译英、日译中……</summary>
+    void UpdateLanguageText()
+    {
+        var n = Languages.All[_nativeLanguage.SelectedIndex];
+        var t = Languages.All[_targetLanguage.SelectedIndex];
+        var forward = AppConfig.PairLabel(n, t);
+        var reverse = AppConfig.PairLabel(t, n);
+        _direction.SetItems("自动", forward, reverse);
+        _level.SetItems(AppConfig.LevelLabels(n, t));
+        if (_levelRow != null)
+        {
+            _levelRow.Subtitle = "只对大模型生效。" + forward + "是译文的难度，" + reverse + "是「更地道的说法」的难度。"
+                + (Languages.IsChineseEnglish(n, t) ? "考研：高级词汇 + 复杂句式，像经济学人" : "高级：书面、地道的高级表达，像高质量的报刊");
+        }
+
+        if (_autoWriteRow != null)
+            _autoWriteRow.Subtitle = "只在" + forward + "、并且整段就是输入框全部内容时写入";
+        if (_lookupRow != null)
+        {
+            _lookupRow.Subtitle = !t.Spaced ? t.Name + "词和词之间不空格，暂时不能点词查询"
+                : t.Code == "en" ? "看义项、音标、记忆点，还能按某个意思改一句"
+                : "看义项、发音、记忆点，还能按某个意思改一句（需要大模型接口）";
+        }
+
+        if (_speakRow != null)
+            _speakRow.Subtitle = Speech.HasVoice(t.Culture) ? "用 Windows 自带的" + t.Name + "语音" : Speech.MissingHint(t.Name);
     }
 
     void Changed(bool immediate)
@@ -435,13 +501,16 @@ sealed class SettingsForm : Form
 
     void UpdateEngineHint()
     {
+        var n = Languages.All[_nativeLanguage.SelectedIndex];
+        var t = Languages.All[_targetLanguage.SelectedIndex];
         if (_directionRow != null)
         {
             _directionRow.Subtitle = DirectionKeys[_direction.SelectedIndex] switch
             {
-                "zh2en" => "输入中文，翻成英文",
-                "en2zh" => "直接用英文写，卡片显示中文意思；配了大模型还会给出更地道的说法",
-                _ => "有中文就翻成英文；纯英文就翻成中文，配了大模型还会给出更地道的说法",
+                "forward" => "输入" + n.Name + "，翻成" + t.Name,
+                "reverse" => "直接用" + t.Name + "写，卡片显示" + n.Name + "意思；配了大模型还会给出更地道的说法",
+                _ => "写" + n.Name + "就翻成" + t.Name + "；写" + t.Name + "就翻成" + n.Name + "，配了大模型还会给出更地道的说法"
+                    + (n.Script == t.Script ? (n.Script == Script.Latin ? "。两种都用拉丁字母，只能靠常用词来分，分错时请手动选方向" : "。两种文字太像，自动分不清，请手动选方向") : ""),
             };
         }
 
@@ -450,15 +519,20 @@ sealed class SettingsForm : Form
         var key = EngineKeys[_engine.SelectedIndex];
         var chat = _baseUrl.Text.Trim().Length > 0 && _model.Text.Trim().Length > 0
             && (_apiKey.Text.Trim().Length > 0 || AppConfig.IsLocalEndpoint(_baseUrl.Text));
+        var unsupported = n.Transmart.Length == 0 ? n : t.Transmart.Length == 0 ? t : null;
         _engineRow.Subtitle = key switch
         {
-            "auto" => chat ? "现在会用大模型；出错时自动改用免费引擎" : "还没配置大模型，现在用免费引擎（腾讯交互翻译，慢了同时问 MyMemory / Google）",
+            "auto" when chat => "现在会用大模型；出错时自动改用免费引擎",
+            "auto" when unsupported != null => "还没配置大模型，现在用免费引擎（腾讯交互翻译不支持" + unsupported.Name + "，改用 MyMemory / Google）",
+            "auto" => "还没配置大模型，现在用免费引擎（腾讯交互翻译，慢了同时问 MyMemory / Google）",
             "openai" => chat ? "只用大模型，出错不换引擎" : "还没填好大模型接口，翻译会失败",
+            "transmart" when unsupported != null => "不支持" + unsupported.Name + "，请换一个引擎",
             "transmart" => "国内访问快，质量接近机器翻译平均水平",
             "mymemory" => "每天有免费额度，速度一般",
             _ => "国内网络经常连不上",
         };
-        _engineRow.SubtitleColor = key == "openai" && !chat ? Theme.Current.Error : Theme.Current.Muted;
+        var broken = (key == "openai" && !chat) || (key == "transmart" && unsupported != null);
+        _engineRow.SubtitleColor = broken ? Theme.Current.Error : Theme.Current.Muted;
     }
 
     void UpdateEnabled()
@@ -467,9 +541,11 @@ sealed class SettingsForm : Form
         _level.Enabled = key is "auto" or "openai";
         _hotkey.Enabled = _enabled.Checked;
         _studyStyle.Enabled = _study.Checked;
-        _speakOnLookup.Enabled = Speech.Available;
-        _speed.Enabled = Speech.Available;
-        _showSpeak.Enabled = Speech.Available;
+        var voice = Speech.HasVoice(Languages.All[_targetLanguage.SelectedIndex].Culture);
+        _speakOnLookup.Enabled = voice;
+        _speed.Enabled = voice;
+        _showSpeak.Enabled = voice;
+        _clickLookup.Enabled = Languages.All[_targetLanguage.SelectedIndex].Spaced;
     }
 
     async Task TestAsync()

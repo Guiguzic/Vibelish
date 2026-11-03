@@ -195,6 +195,15 @@ sealed class SegmentedControl : ThemedControl
         }
     }
 
+    /// <summary>换各段的文字（个数不变，选中的不变），比如「中译英」跟着语言变成「中译日」。</summary>
+    public void SetItems(params string[] items)
+    {
+        if (items.Length != _items.Length || items.SequenceEqual(_items))
+            return;
+        _items = items;
+        Invalidate();
+    }
+
     int SegmentWidth()
     {
         var widest = 0;

@@ -234,6 +234,10 @@ static class Theme
     /// <summary>卡片上的英文译文。</summary>
     public static Font CardEnglish(float size) => Display(size * _textScale);
 
+    /// <summary>卡片上某种语言的文字。family 为空时用英文字体；这台电脑没装这个字体就退回中文界面字体。</summary>
+    public static Font CardText(string family, float size, FontStyle style = FontStyle.Regular) =>
+        family.Length == 0 ? CardLatin(size, style) : Get(Has(family) ? family : CjkFamily, size * _textScale, style);
+
     /// <summary>Segoe Fluent Icons（Windows 11）或 Segoe MDL2 Assets（Windows 10）里的图标字体。</summary>
     public static Font? Icons(float size)
     {

@@ -4,10 +4,11 @@
 
 # Vibelish
 
-**写 prompt 的时候，顺手学英语。**
+**写 prompt 的时候，顺手学外语。**
 
 Windows 托盘小工具：在任意输入框里写中文，旁边的卡片实时给出考研难度的英文；<br>
-直接写英文，卡片给出中文意思和更地道的说法。
+直接写英文，卡片给出中文意思和更地道的说法。<br>
+不只是中英：母语和在学的语言都能自己选，日文、韩文、法文、西班牙文……都行。
 
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 ![.NET 9](https://img.shields.io/badge/.NET-9-512BD4)
@@ -32,23 +33,24 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 ## 功能
 
 - **中译英 / 英译中，自动判断**：输入里有中文就翻成英文，纯英文就翻成中文。也可以在托盘菜单或设置里固定一个方向。
+- **多种语言**：母语和在学的语言可以从 14 种里任选（简体 / 繁体中文、英、日、韩、法、德、西、葡、意、俄、越、泰、印尼），比如中文学日文、日文学英文、英文学法文。见[多语言](#多语言)。
 - **任意输入框都能用**：VS Code / Cursor、Windows Terminal 和 PowerShell（包括在里面跑的 Claude Code）、浏览器、微信……读不到的输入框还有输入法钩子和 OCR 兜底。
 - **快**：大模型逐字输出，第一个词通常一秒内出来；没配大模型时用免费引擎，腾讯交互翻译一般 0.3–0.7 秒。
 - **考研 / 六级 / 日常三档难度**：考研档会用更精确的词和复杂句式，读起来像经济学人。
 - **重点词**：译文下面列出 3–6 个值得记的词和中文释义，和译文在同一次请求里生成，不用多等。
-- **点词查义**：点英文里任意一个单词，看音标、义项、它在这句里的意思和记忆点；还能按另一个义项改写一句。
+- **点词查义**：点译文里任意一个单词，看音标、义项、它在这句里的意思和记忆点；还能按另一个义项改写一句。
 - **更地道的说法**：英译中时给出改好的英文，可以朗读，也可以一键替换输入框里自己写的那句。
-- **朗读**：用 Windows 自带的英文语音，可调语速。
+- **朗读**：用 Windows 自带的语音，跟着在学的语言换，可调语速。
 - **好看**：浅色 / 深色跟随系统，六种强调色，卡片不抢焦点，可以拖到任意位置。
 - **隐私**：原文和译文不写进日志，API Key 用 Windows DPAPI 加密，密码框自动跳过。
 
 ## 安装
 
-到 [Releases](https://github.com/Guiguzic/Vibelish/releases) 下载 `Vibelish-Setup-1.2.0.exe`，双击安装（也可以[从源码构建](#从源码构建)）。
+到 [Releases](https://github.com/Guiguzic/Vibelish/releases) 下载 `Vibelish-Setup-1.3.0.exe`，双击安装（也可以[从源码构建](#从源码构建)）。
 
 - 装到当前用户目录 `%LOCALAPPDATA%\Programs\Vibelish`，**不需要管理员权限**，也**不需要另外装 .NET**。
 - 已经装过会显示「更新」，沿用原来的开机启动和桌面快捷方式选择，设置和 API Key 都保留。
-- 静默安装：`Vibelish-Setup-1.2.0.exe --silent`（或 `/S`），失败原因写在 `%TEMP%\Vibelish-Setup.log`。
+- 静默安装：`Vibelish-Setup-1.3.0.exe --silent`（或 `/S`），失败原因写在 `%TEMP%\Vibelish-Setup.log`。
 - 卸载：Windows 设置 → 应用 → Vibelish，或开始菜单里的「卸载 Vibelish」。设置文件 `%APPDATA%\Vibelish` 会保留。
 
 > 从旧版「输入翻译」升级：直接装新版就行。安装程序会清掉旧版的程序、快捷方式和开机启动项，第一次启动时自动把旧设置（包括 API Key）搬过来。
@@ -68,7 +70,7 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 
 <p align="center">
   <img src="docs/lookup-dark.png" width="49%" alt="点单词查释义：音标、义项、本句意思、记忆点">
-  <img src="docs/settings.png" width="49%" alt="设置窗口：翻译方向、引擎、难度">
+  <img src="docs/settings.png" width="49%" alt="设置窗口：我的母语、我在学的语言、翻译方向">
 </p>
 
 ## 两种模式
@@ -81,6 +83,34 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 | 写入输入框 | 英文译文 | 更地道的说法 |
 
 「自动」模式按这一段里有没有汉字判断：`帮我 fix 这个 bug` 走中译英，`fix the login bug` 走英译中。少于三个英文字母的（`ok`、`v2`）不翻。开始听写前输入框里已经有的英文（比如终端里的占位提示）不会被翻，改过以后才翻。
+
+换成别的语言对时，「中译英」就变成「正向」（母语 → 在学的语言），「英译中」就变成「反向」（在学的语言 → 母语），用法完全一样。
+
+## 多语言
+
+设置 → 翻译 → 语言，选「我的母语」和「我在学」，翻译方向、难度、提示词、字体、朗读的语音都会跟着换。默认是中文母语学英文。
+
+| 代码 | 语言 | 代码 | 语言 |
+|---|---|---|---|
+| `zh-CN` | 简体中文 | `es` | 西班牙文 |
+| `zh-TW` | 繁体中文 | `pt` | 葡萄牙文 |
+| `en` | 英文 | `it` | 意大利文 |
+| `ja` | 日文 | `ru` | 俄文 |
+| `ko` | 韩文 | `vi` | 越南文 |
+| `fr` | 法文 | `th` | 泰文 |
+| `de` | 德文 | `id` | 印尼文 |
+
+<p align="center">
+  <img src="docs/zh2ja.png" width="49%" alt="中译日：中文翻成日文，下面列出重点词">
+  <img src="docs/fr2zh.png" width="49%" alt="法译中：自己写的法文翻成中文，再给出更地道的说法">
+</p>
+
+- **自动判断方向**：两种语言文字不同时看文字（汉字、假名、谚文、泰文、西里尔字母、拉丁字母），比如中文学日文时，带假名的是日文。两种都用拉丁字母时（比如英文学法文）只能靠常用词来分，分错了可以在托盘菜单里固定方向；简体和繁体中文分不清，请固定方向。
+- **难度**：中文学英文叫考研 / 六级 / 日常，其他语言对叫高级 / 中级 / 日常。
+- **免费引擎**：腾讯交互翻译支持大多数语言对，个别方向（比如俄译中、印尼译中）和繁体中文不支持，会自动改用 MyMemory / Google，慢一些（2–3 秒）。
+- **朗读**：要先在 Windows 设置 → 时间和语言 → 语音 里装对应语言的语音，没装时设置里会提示。
+- **点词查义**：英文用内置词典；其他语言需要大模型。日文、泰文、繁体中文这类词和词之间不空格的语言暂时不能点词。
+- 界面文字还是中文。
 
 ## 配置大模型（推荐）
 
@@ -105,7 +135,7 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 设置窗口改了立刻生效，不用点保存：
 
 - **通用**：全局热键开关、录新热键（Backspace 恢复默认）、开机自动启动。
-- **翻译**：翻译方向（自动 / 中译英 / 英译中）、翻译引擎、英文难度、开始翻译的快慢、译完自动复制 / 自动写入。
+- **翻译**：我的母语、我在学的语言、翻译方向（自动 / 正向 / 反向，比如中译英 / 英译中）、翻译引擎、难度、开始翻译的快慢、译完自动复制 / 自动写入。
 - **大模型**：服务商、接口地址、API Key、模型、逐字显示、关闭深度思考、测试连接（会显示第一个词和整句各用了多久）。
 - **卡片与外观**：主题、强调色、文字大小、卡片位置（跟着输入框 / 屏幕顶部 / 屏幕底部）、显示原文 / 操作提示 / 译文来源、完成后自动收起。
 - **单词与朗读**：重点词及显示方式（仅单词 / 带释义 / 详细）、点词查义、朗读按钮、查词时自动朗读、语速。
@@ -118,7 +148,8 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 
 | 键 | 说明 |
 |---|---|
-| `Direction` | `auto`（默认）、`zh2en`、`en2zh` |
+| `NativeLanguage` / `TargetLanguage` | 我的母语 / 我在学的语言，代码见[多语言](#多语言)；默认 `zh-CN` / `en` |
+| `Direction` | `auto`（默认）、`forward`（母语 → 在学的语言）、`reverse`（反过来）；旧的 `zh2en`、`en2zh` 也能读 |
 | `Engine` | `auto`（默认，配了大模型就用它）、`openai`、`transmart`（腾讯交互翻译）、`mymemory`、`google` |
 | `EnglishLevel` | `kaoyan`（默认）、`cet6`、`plain`；只对大模型生效 |
 | `OpenAiBaseUrl` / `OpenAiModel` | OpenAI 兼容接口的地址和模型，地址末尾带不带 `/chat/completions` 都行 |
@@ -126,9 +157,9 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 | `StreamOutput` / `FastThinking` | 逐字显示 / 关闭深度思考（默认都开） |
 | `Hotkey` | 例如 `Ctrl+Alt+T`，至少带 Ctrl、Alt 或 Win |
 | `PauseMs` | 输完停顿多久开始翻译，200–3000，默认 600 |
-| `AutoCopy` / `AutoWrite` | 译完自动复制 / 自动写回输入框（默认关；英译中不会自动写入） |
+| `AutoCopy` / `AutoWrite` | 译完自动复制 / 自动写回输入框（默认关；反向翻译不会自动写入） |
 | `StudyWords` / `StudyStyle` | 显示重点词 / `word`、`meaning`（默认）、`detail` |
-| `ClickLookup` | 点英文单词查释义 |
+| `ClickLookup` | 点单词查释义 |
 | `ShowSpeak` / `SpeakOnLookup` / `SpeakSpeed` | 朗读按钮 / 查词时自动朗读 / `slow`、`normal`、`fast` |
 | `Theme` / `Accent` / `CardTextSize` | `system`、`light`、`dark` / `blue`、`purple`、`pink`、`orange`、`green`、`graphite` / `small`、`normal`、`large` |
 | `CardPosition` | `input`（默认）、`top`、`bottom` |
@@ -167,19 +198,21 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 
 - `bin\Release\net9.0-windows10.0.19041.0\Vibelish.exe`：依赖 .NET 9 桌面运行时
 - `publish\Vibelish.exe`：单文件自包含，旁边的 `PresentationNative_cor3.dll`、`vcruntime140_cor3.dll` 和 `hook\imehook.dll` 不能删
-- `installer\Vibelish-Setup-1.2.0.exe`：安装包，用 Windows 自带的 .NET Framework 4.8 运行
+- `installer\Vibelish-Setup-1.3.0.exe`：安装包，用 Windows 自带的 .NET Framework 4.8 运行
 
 ## 诊断
 
 ```powershell
 Vibelish.exe --translate "fix the login bug"            # 用当前设置翻译一句，打印方向、用时，以及更地道的说法
 Vibelish.exe --translate 你好 transmart                  # 临时换引擎
+Vibelish.exe --translate 你好 "zh-CN>ja"                 # 临时换语言对（母语>在学的语言，可以加 @forward / @reverse）
 Vibelish.exe --translate 你好 openai http://127.0.0.1:11434/v1 qwen2.5:7b   # 临时换接口和模型，不改配置
 Vibelish.exe --diag [--text]                             # 打印当前焦点输入框的信息（加 --text 带正文前 120 字）
 Vibelish.exe --selftest-words                            # 卡片排版、翻译方向、流式输出、热键解析等自检
 Vibelish.exe --selftest-terminal                         # 终端读取自检
-Vibelish.exe --selftest-speech                           # 检查有没有英文语音（不出声）
-Vibelish.exe --preview reverse dark+purple shot.png      # 界面预览：card / reverse / reverse-good / gloss / stream / detail / words / listening / error / idle / settings:N
+Vibelish.exe --selftest-speech [ja-JP]                   # 检查有没有某种语言的语音，默认英文（不出声）
+Vibelish.exe --preview reverse dark+purple shot.png      # 界面预览：card / reverse / reverse-good / ja / fr / gloss / stream / detail / words / listening / error / idle / settings:N
+Vibelish.exe --preview settings:1 light - "zh-CN>ko"     # 预览时换语言对（- 表示不截图）
 Vibelish.exe --uninstall [--yes]                         # 卸载
 ```
 
@@ -193,6 +226,8 @@ Vibelish.exe --uninstall [--yes]                         # 卸载
 <summary>English</summary>
 
 **Vibelish** is a Windows tray app for learning English while you vibe code. Type Chinese in any input box (your editor, terminal, Claude Code, a chat window) and a floating card shows an exam-level English translation with key words you can click to look up. Type English instead, and the card shows what it means in Chinese plus a more natural way to say it, which you can write back into the input box with one click.
+
+It isn't limited to Chinese and English: pick your native language and the language you're learning from 14 (Simplified/Traditional Chinese, English, Japanese, Korean, French, German, Spanish, Portuguese, Italian, Russian, Vietnamese, Thai, Indonesian), and the direction, prompts, fonts and voice all follow.
 
 It works with any OpenAI-compatible API (DeepSeek, Qwen, Kimi, GLM, OpenAI, local Ollama) and falls back to free translation engines when no API is configured. The UI is in Chinese.
 

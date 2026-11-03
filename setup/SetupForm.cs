@@ -181,7 +181,7 @@ sealed class SetupForm : Form
         }, 1, 0);
         header.Controls.Add(new Label
         {
-            Text = "版本 " + InstallerCore.ProductVersion + " · 写 prompt 的时候，顺手学英语",
+            Text = "版本 " + InstallerCore.ProductVersion + " · " + InstallerCore.Tagline,
             AutoSize = true,
             Font = Theme.Ui(8.5F),
             ForeColor = Color.FromArgb(148, 163, 184),
@@ -264,8 +264,8 @@ sealed class SetupForm : Form
         var usage = NewCard("怎么用");
         usage.Add(Step(1, "在任意输入框里按 " + hotkey + " 开始。"));
         usage.Add(Step(2, "照常打字：写中文，卡片上出现英文；直接写英文，卡片上出现中文意思。"));
-        usage.Add(Step(3, "按 Enter 完成（Shift+Enter 换行），按 Esc 取消。点英文里的单词可以查词、换说法。"));
-        usage.Add(Wrapped("右键托盘图标可以打开设置、切换翻译方向。\n配置大模型接口（DeepSeek、通义千问、Kimi 等）后，译文更地道，写英文时还会给出更地道的说法。", Hint, new Padding(0, 6, 0, 0)));
+        usage.Add(Step(3, "按 Enter 完成（Shift+Enter 换行），按 Esc 取消。点译文里的单词可以查词、换说法。"));
+        usage.Add(Wrapped("右键托盘图标可以打开设置、切换翻译方向；在设置 → 翻译里还能换成日文、法文、西班牙文等别的语言。\n配置大模型接口（DeepSeek、通义千问、Kimi 等）后，译文更地道，写外语时还会给出更地道的说法。", Hint, new Padding(0, 6, 0, 0)));
         stack.Controls.Add(usage);
 
         _launch.Margin = new Padding(2, 0, 0, 0);

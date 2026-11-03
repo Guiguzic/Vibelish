@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace Vibelish;
@@ -101,7 +102,9 @@ static class WordStudy
             {
                 foreach (var item in sensesElement.EnumerateArray())
                 {
-                    var chinese = ReadString(item, "zh");
+                    var chinese = ReadString(item, "meaning");
+                    if (chinese.Length == 0)
+                        chinese = ReadString(item, "zh");
                     if (chinese.Length == 0)
                         chinese = ReadString(item, "chinese");
                     if (chinese.Length == 0)
@@ -210,10 +213,12 @@ static class WordStudy
                 return words;
             foreach (var item in array.EnumerateArray())
             {
-                var english = ReadString(item, "en");
+                var english = ReadString(item, "word");
                 if (english.Length == 0)
-                    english = ReadString(item, "word");
-                var chinese = ReadString(item, "zh");
+                    english = ReadString(item, "en");
+                var chinese = ReadString(item, "meaning");
+                if (chinese.Length == 0)
+                    chinese = ReadString(item, "zh");
                 if (chinese.Length == 0)
                     chinese = ReadString(item, "chinese");
                 if (english.Length == 0 || chinese.Length == 0)
@@ -399,7 +404,17 @@ static class WordStudy
         return null;
     }
 
-    static bool IsLetter(char ch) => ch is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z');
+    /// <summary>能组成可点单词的字母：拉丁（含带重音的）、西里尔、韩文等用空格分词的文字。
+    /// 汉字、假名、泰文不分词，不算。</summary>
+    static bool IsLetter(char ch)
+    {
+        if (ch is >= 'A' and <= 'Z' or >= 'a' and <= 'z')
+            return true;
+        if (ch < 'À' || ch is >= '　' and <= '鿿' or >= '豈' and <= '﫿' or >= '＀' and <= '￯'
+            or >= '฀' and <= '๿')
+            return false;
+        return char.IsLetter(ch) || CharUnicodeInfo.GetUnicodeCategory(ch) is UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark;
+    }
 }
 
 sealed class EnglishLayout
@@ -502,7 +517,9 @@ sealed class EnglishLayout
     /// <summary>中文没有空格：英译中的译文要按字拆开，才能在任意两个字之间换行。</summary>
     static List<WordStudy.Piece> SplitCjk(List<WordStudy.Piece> pieces)
     {
-        static bool Wide(char ch) => ch is >= (char)0x3000 and <= (char)0x9FFF or >= (char)0xF900 and <= (char)0xFAFF or >= (char)0xFF00 and <= (char)0xFFEF;
+        // 汉字、假名、全角标点，还有泰文（不用空格分词）。泰文的元音符号要跟着前面的辅音，按字形簇拆。
+        static bool Wide(char ch) => ch is >= (char)0x3000 and <= (char)0x9FFF or >= (char)0xF900 and <= (char)0xFAFF
+            or >= (char)0xFF00 and <= (char)0xFFEF or >= (char)0x0E00 and <= (char)0x0E7F;
 
         var list = new List<WordStudy.Piece>(pieces.Count);
         foreach (var piece in pieces)
@@ -513,19 +530,23 @@ sealed class EnglishLayout
                 continue;
             }
 
+            var text = piece.Text;
+            var starts = StringInfo.ParseCombiningCharacters(text);
             var start = 0;
-            for (var i = 0; i < piece.Text.Length; i++)
+            for (var e = 0; e < starts.Length; e++)
             {
-                if (!Wide(piece.Text[i]))
+                var at = starts[e];
+                if (!Wide(text[at]))
                     continue;
-                if (i > start)
-                    list.Add(new WordStudy.Piece(piece.Text[start..i], false));
-                list.Add(new WordStudy.Piece(piece.Text[i].ToString(), false));
-                start = i + 1;
+                var end = e + 1 < starts.Length ? starts[e + 1] : text.Length;
+                if (at > start)
+                    list.Add(new WordStudy.Piece(text[start..at], false));
+                list.Add(new WordStudy.Piece(text[at..end], false));
+                start = end;
             }
 
-            if (start < piece.Text.Length)
-                list.Add(new WordStudy.Piece(piece.Text[start..], false));
+            if (start < text.Length)
+                list.Add(new WordStudy.Piece(text[start..], false));
         }
 
         return list;

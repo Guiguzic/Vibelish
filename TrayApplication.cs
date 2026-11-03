@@ -22,7 +22,7 @@ sealed class TrayApplicationContext : ApplicationContext
     readonly EventWaitHandle _showEvent = new(false, EventResetMode.AutoReset, @"Local\Vibelish.Show");
     readonly ManualResetEvent _stopping = new(false);
     readonly Thread _showThread;
-    readonly List<(string Source, string Result, bool ToChinese, string? Better)> _recent = new();
+    readonly List<(string Source, string Result, bool ToNative, string? Better)> _recent = new();
     readonly ToolStripMenuItem _toggleItem;
     readonly ToolStripMenuItem _recentItem;
     readonly ToolStripMenuItem _directionItem;
@@ -40,7 +40,7 @@ sealed class TrayApplicationContext : ApplicationContext
     string _sentence = "";
     long _textChangedAt = Environment.TickCount64;
 
-    // 开始听写时输入框里已经有的英文（终端里的占位提示、以前写的草稿）不翻，改过以后才翻。
+    // 开始听写时输入框里已经有的外语（终端里的英文占位提示、以前写的草稿）不翻，改过以后才翻。
     string _baseline = "";
     bool _baselineOpen;
     long _sessionStartedAt;
@@ -86,11 +86,9 @@ sealed class TrayApplicationContext : ApplicationContext
         };
         _recentItem = new ToolStripMenuItem("最近翻译");
         _directionItem = new ToolStripMenuItem("翻译方向");
-        foreach (var (key, label) in new[] { ("auto", "自动（有中文就中译英，纯英文就英译中）"), ("zh2en", "中译英"), ("en2zh", "英译中") })
-        {
-            var direction = key;
-            _directionItem.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => BeginOnUi(() => SetDirection(direction))) { Tag = key });
-        }
+        // 文字跟着母语和在学的语言变，打开菜单时再填（RefreshMenu）。
+        foreach (var key in new[] { "auto", "forward", "reverse" })
+            _directionItem.DropDownItems.Add(new ToolStripMenuItem(key, null, (_, _) => BeginOnUi(() => SetDirection(key))) { Tag = key });
 
         _hotkeyItem = new ToolStripMenuItem("启用热键") { CheckOnClick = true, Checked = _config.Enabled };
         _hotkeyItem.Click += (_, _) => SetHotkeyEnabled(_hotkeyItem.Checked);
@@ -238,12 +236,12 @@ sealed class TrayApplicationContext : ApplicationContext
         ShowIdle(true);
     }
 
-    /// <summary>提示里说「输入中文」还是「输入英文」。</summary>
+    /// <summary>提示里说「输入中文」「输入英文」还是「输入中文或英文」。</summary>
     string InputLanguage => _config.Direction switch
     {
-        "zh2en" => "中文",
-        "en2zh" => "英文",
-        _ => "中文或英文",
+        "forward" => _config.Native.Name,
+        "reverse" => _config.Target.Name,
+        _ => _config.Native.Name + "或" + _config.Target.Name,
     };
 
     string IdleHint() => _hotkey.HotkeyRegistered
@@ -306,7 +304,7 @@ sealed class TrayApplicationContext : ApplicationContext
 
         var now = Environment.TickCount64;
         var field = ReadField();
-        var imeText = committed + (Lang.HasCjk(composition) ? composition : "");
+        var imeText = committed + (composition.Any(char.IsLetter) ? composition : "");
         var shown = TerminalReader.RedactSecrets(_config.Readable(field) ? field : imeText);
         if (_baselineOpen)
         {
@@ -321,7 +319,7 @@ sealed class TrayApplicationContext : ApplicationContext
             }
         }
 
-        if (_baseline.Length > 0 && string.Equals(shown, _baseline, StringComparison.Ordinal) && _config.ToChinese(shown))
+        if (_baseline.Length > 0 && string.Equals(shown, _baseline, StringComparison.Ordinal) && _config.ToNative(shown))
             shown = "";
 
         // 输入框偶尔读空一下，别马上把卡片清掉。
@@ -334,7 +332,7 @@ sealed class TrayApplicationContext : ApplicationContext
             _textChangedAt = now;
             if (_translating && !string.Equals(shown, _translatedFor, StringComparison.Ordinal))
                 CancelTranslation();
-            _overlay.UpdateSource(shown, _fieldBounds, shown.Length > 0 && _config.ToChinese(shown));
+            _overlay.UpdateSource(shown, _fieldBounds, shown.Length > 0 && _config.ToNative(shown));
         }
 
         var due = now - _textChangedAt >= _config.PauseMs || EndsClause(shown);
@@ -488,9 +486,9 @@ sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>卡片标题后面的小字：翻译方向 · 难度（没用大模型时是引擎名）。还不知道方向时传 null。</summary>
-    string Badge(bool? toChinese)
+    string Badge(bool? toNative)
     {
-        var direction = toChinese is { } chinese ? (chinese ? "英→中" : "中→英") : _config.DirectionLabel;
+        var direction = toNative is { } back ? _config.ArrowLabel(back) : _config.DirectionLabel;
         var engine = _config.UsesChatForTranslation
             ? _config.LevelLabel
             : _config.Engine switch
@@ -542,8 +540,8 @@ sealed class TrayApplicationContext : ApplicationContext
         var token = source.Token;
         _translating = true;
         _translatedFor = sentence;
-        var toChinese = _config.ToChinese(sentence);
-        _overlay.SetBadge(Badge(toChinese));
+        var toNative = _config.ToNative(sentence);
+        _overlay.SetBadge(Badge(toNative));
         _overlay.SetTranslating(true);
         // 逐字输出：后台线程收到一段就排到 UI 线程，过期的（已经换了一句）直接丢掉。
         Action<string>? partial = null;
@@ -552,7 +550,7 @@ sealed class TrayApplicationContext : ApplicationContext
             partial = text => Dispatch(() =>
             {
                 if (!token.IsCancellationRequested && generation == _translateGeneration && _translating)
-                    _overlay.ShowPartial(sentence, text, toChinese);
+                    _overlay.ShowPartial(sentence, text, toNative);
             });
         }
 
@@ -577,13 +575,13 @@ sealed class TrayApplicationContext : ApplicationContext
             _doneChinese = sentence;
             TraceLog.Note("translate ok " + TraceLog.Safe(result.Detail) + " chars=" + result.Text.Length
                 + " first=" + result.FirstMs + "ms total=" + result.TotalMs + "ms");
-            _overlay.ShowTranslation(sentence, result.Text, result.Detail, result.ToChinese, result.Better);
-            AddRecent(sentence, result.Text, result.ToChinese, result.Better);
-            ApplyTranslation(result.ToChinese);
+            _overlay.ShowTranslation(sentence, result.Text, result.Detail, result.ToNative, result.Better);
+            AddRecent(sentence, result.Text, result.ToNative, result.Better);
+            ApplyTranslation(result.ToNative);
             if (result.Words is { Count: > 0 } words)
                 _overlay.ShowStudy(words); // 和译文同一次请求带回来的，不用再等。
             else if (_config.StudyWords && _config.HasChatApi)
-                _ = StartStudyAsync(result.ToChinese ? _overlay.LookupSentence : result.Text, result.ToChinese ? result.Text : sentence);
+                _ = StartStudyAsync(result.ToNative ? _overlay.LookupSentence : result.Text, result.ToNative ? result.Text : sentence);
         }
         catch (OperationCanceledException)
         {
@@ -677,8 +675,8 @@ sealed class TrayApplicationContext : ApplicationContext
         var token = cts.Token;
         var sentence = _overlay.LookupSentence;
         _overlay.BeginWordLookup(word);
-        if (_config.SpeakOnLookup && Speech.Available)
-            Speech.Speak(word, _config.SpeakSpeed);
+        if (_config.SpeakOnLookup)
+            Speech.Speak(word, _config.SpeakSpeed, _config.Target.Culture);
         try
         {
             var gloss = await _translator.LookupWordAsync(word, sentence, token);
@@ -749,9 +747,9 @@ sealed class TrayApplicationContext : ApplicationContext
             return;
         _lookup?.Cancel();
         _senseRewrite?.Cancel();
-        if (_overlay.ToChinese)
+        if (_overlay.ToNative)
         {
-            // 英译中：换掉的是「更地道的说法」，中文意思不变。
+            // 反向：换掉的是「更地道的说法」，母语的意思不变。
             _overlay.AdoptBetter(text);
             _overlay.SetStatus("已换成这句，可以朗读或替换到输入框", OverlayForm.StatusKind.Success);
             return;
@@ -763,47 +761,49 @@ sealed class TrayApplicationContext : ApplicationContext
         _overlay.SetStatus("已换成这句，可以复制或写入", OverlayForm.StatusKind.Success);
     }
 
+    /// <summary>朗读的总是在学的语言（正向的译文，或反向的更地道说法 / 原文）。</summary>
     void Speak(string text)
     {
         if (text.Trim().Length == 0)
             return;
-        if (!Speech.Speak(text, _config.SpeakSpeed))
-            _overlay.SetStatus(Speech.MissingHint, OverlayForm.StatusKind.Error);
+        if (!Speech.Speak(text, _config.SpeakSpeed, _config.Target.Culture))
+            _overlay.SetStatus(Speech.MissingHint(_config.Target.Name), OverlayForm.StatusKind.Error);
     }
 
     void CopyResult()
     {
         var ok = CopyToClipboard(_overlay.ResultText);
-        _overlay.SetStatus(ok ? (_overlay.ToChinese ? "已复制中文" : "已复制英文") : "复制失败，剪贴板被别的程序占用，请再点一次",
+        var language = _overlay.ToNative ? _config.Native : _config.Target;
+        _overlay.SetStatus(ok ? "已复制" + language.Name : "复制失败，剪贴板被别的程序占用，请再点一次",
             ok ? OverlayForm.StatusKind.Success : OverlayForm.StatusKind.Error);
     }
 
-    /// <summary>中译英写译文；英译中写更地道的英文，替换掉自己写的那句。</summary>
+    /// <summary>正向写译文；反向写更地道的说法，替换掉自己写的那句。</summary>
     void WriteResult()
     {
-        var english = _overlay.WriteText;
-        if (english.Length == 0)
+        var text = _overlay.WriteText;
+        if (text.Length == 0)
             return;
 
-        if (FocusReader.TryWrite(FreshField(), english, out var message))
+        if (FocusReader.TryWrite(FreshField(), text, _config.Target.Name, out var message))
         {
             _overlay.SetStatus(message, OverlayForm.StatusKind.Success);
             return;
         }
 
-        var copied = CopyToClipboard(english);
-        _overlay.SetStatus(copied ? (message.Length == 0 ? "已复制英文" : message) : "写入失败，复制也失败了，请再试一次",
+        var copied = CopyToClipboard(text);
+        _overlay.SetStatus(copied ? (message.Length == 0 ? "已复制" + _config.Target.Name : message) : "写入失败，复制也失败了，请再试一次",
             copied ? OverlayForm.StatusKind.Info : OverlayForm.StatusKind.Error);
     }
 
-    void ApplyTranslation(bool toChinese)
+    void ApplyTranslation(bool toNative)
     {
         var text = _overlay.ResultText;
         if (text.Length == 0)
             return;
 
-        // 英译中不自动写入：中文写进输入框没用，悄悄换掉自己写的英文也太突然。
-        if (_config.AutoWrite && !toChinese && FocusReader.TryWrite(FreshField(), text, out var message))
+        // 反向不自动写入：母语写进输入框没用，悄悄换掉自己写的外语也太突然。
+        if (_config.AutoWrite && !toNative && FocusReader.TryWrite(FreshField(), text, _config.Target.Name, out var message))
         {
             _overlay.SetStatus(message, OverlayForm.StatusKind.Success);
             return;
@@ -846,12 +846,12 @@ sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    void AddRecent(string source, string result, bool toChinese, string? better)
+    void AddRecent(string source, string result, bool toNative, string? better)
     {
         if (result.Length == 0)
             return;
         _recent.RemoveAll(item => string.Equals(item.Result, result, StringComparison.Ordinal));
-        _recent.Insert(0, (source, result, toChinese, better));
+        _recent.Insert(0, (source, result, toNative, better));
         if (_recent.Count > RecentLimit)
             _recent.RemoveRange(RecentLimit, _recent.Count - RecentLimit);
     }
@@ -860,11 +860,11 @@ sealed class TrayApplicationContext : ApplicationContext
     {
         if (index < 0 || index >= _recent.Count)
             return;
-        var (source, result, toChinese, better) = _recent[index];
+        var (source, result, toNative, better) = _recent[index];
         if (_capturing)
             EndSession(cancel: true);
         _overlay.ShowIdle("最近翻译", "", OverlayForm.CardPlace.TopCenter);
-        _overlay.ShowTranslation(source, result, "", toChinese, better);
+        _overlay.ShowTranslation(source, result, "", toNative, better);
         _overlay.FinishSession();
         CopyResult();
         ScheduleAutoHide();
@@ -910,8 +910,19 @@ sealed class TrayApplicationContext : ApplicationContext
         _hotkeyItem.Checked = _config.Enabled;
         _hotkeyItem.Text = _config.Enabled && _hotkey.HotkeyRegistered ? "启用热键（" + _hotkey.HotkeyText + "）" : "启用热键";
         _startupItem.Checked = StartupRegistration.IsEnabled;
+        var native = _config.Native;
+        var target = _config.Target;
         foreach (ToolStripMenuItem item in _directionItem.DropDownItems)
+        {
             item.Checked = Equals(item.Tag, _config.Direction);
+            item.Text = item.Tag switch
+            {
+                "forward" => AppConfig.PairLabel(native, target) + "（" + native.Name + " → " + target.Name + "）",
+                "reverse" => AppConfig.PairLabel(target, native) + "（" + target.Name + " → " + native.Name + "）",
+                _ => "自动（看输入的是" + native.Name + "还是" + target.Name + "）",
+            };
+        }
+
         _directionItem.Text = "翻译方向（" + _config.DirectionLabel + "）";
 
         _recentItem.DropDownItems.Clear();
@@ -925,11 +936,10 @@ sealed class TrayApplicationContext : ApplicationContext
         for (var i = 0; i < _recent.Count; i++)
         {
             var index = i;
-            var (source, result, toChinese, _) = _recent[i];
-            // 英文占地方，英译中时原文多留几个字。
-            var label = toChinese
-                ? Shorten(source, 30) + "   →   " + Shorten(result, 18)
-                : Shorten(source, 14) + "   →   " + Shorten(result, 34);
+            var (source, result, toNative, _) = _recent[i];
+            // 用空格分词的语言（英文这些）占地方，多留几个字。
+            var (from, to) = toNative ? (target, native) : (native, target);
+            var label = Shorten(source, from.Spaced ? 30 : 14) + "   →   " + Shorten(result, to.Spaced ? 34 : 18);
             var item = new ToolStripMenuItem(label, null, (_, _) => BeginOnUi(() => ShowRecent(index)))
             {
                 ToolTipText = result,

@@ -195,7 +195,7 @@ static class FocusReader
         }
     }
 
-    public static bool TryWrite(FocusSnapshot? snapshot, string english, out string message)
+    public static bool TryWrite(FocusSnapshot? snapshot, string text, string language, out string message)
     {
         message = "";
         if (snapshot == null || !snapshot.Ok || snapshot.Element == null)
@@ -206,13 +206,13 @@ static class FocusReader
 
         if (!snapshot.CanWrite)
         {
-            message = "这个输入框不能直接写入，已复制英文，请按 Ctrl+V";
+            message = "这个输入框不能直接写入，已复制" + language + "，请按 Ctrl+V";
             return false;
         }
 
         if (!snapshot.WholeField)
         {
-            message = "这段话不是输入框的全部内容，已复制英文，请在输入框按 Ctrl+V";
+            message = "这段话不是输入框的全部内容，已复制" + language + "，请在输入框按 Ctrl+V";
             return false;
         }
 
@@ -220,24 +220,24 @@ static class FocusReader
         {
             if (!snapshot.Element.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern))
             {
-                message = "这个输入框不支持直接写入，已复制英文";
+                message = "这个输入框不支持直接写入，已复制" + language;
                 return false;
             }
 
             var value = (ValuePattern)pattern;
             if (value.Current.IsReadOnly)
             {
-                message = "这个输入框是只读的，已复制英文";
+                message = "这个输入框是只读的，已复制" + language;
                 return false;
             }
 
-            value.SetValue(english);
+            value.SetValue(text);
             message = "已写入输入框";
             return true;
         }
         catch (Exception ex)
         {
-            message = "不能直接写入（" + ex.Message + "），已复制英文";
+            message = "不能直接写入（" + ex.Message + "），已复制" + language;
             return false;
         }
     }

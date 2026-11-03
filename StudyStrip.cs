@@ -37,9 +37,22 @@ sealed class StudyStrip : Control
 
     public event Action<string>? WordClicked;
 
-    Font WordFont => Theme.CardLatin(9.5F, FontStyle.Bold);
+    string _wordFamily = "";
+    string _meaningFamily = Theme.CjkFamily;
 
-    Font MeaningFont => Theme.Card(9F);
+    Font WordFont => Theme.CardText(_wordFamily, 9.5F, FontStyle.Bold);
+
+    Font MeaningFont => Theme.CardText(_meaningFamily, 9F);
+
+    /// <summary>单词用在学的语言的字体，释义用母语的字体（空字符串表示英文字体）。</summary>
+    public void SetFonts(string wordFamily, string meaningFamily)
+    {
+        if (_wordFamily == wordFamily && _meaningFamily == meaningFamily)
+            return;
+        _wordFamily = wordFamily;
+        _meaningFamily = meaningFamily;
+        Invalidate();
+    }
 
     Font NoteFont => Theme.Card(8.5F);
 

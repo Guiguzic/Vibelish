@@ -172,35 +172,62 @@ static class Program
 
         // 翻译方向：自动时有中文就中译英，纯英文就英译中；太短的、只有数字的不翻。
         var auto = new AppConfig().Normalize();
-        if (auto.ToChinese("帮我 fix 这个 bug") || !auto.ToChinese("fix the login bug"))
+        if (auto.ToNative("帮我 fix 这个 bug") || !auto.ToNative("fix the login bug"))
             return "auto direction";
         if (!auto.Translatable("fix the bug") || auto.Translatable("ok") || auto.Translatable("v2 12") || !auto.Translatable("你好"))
             return "translatable";
-        var zh = new AppConfig { Direction = "zh2en" }.Normalize();
+        var zh = new AppConfig { Direction = "forward" }.Normalize();
         if (zh.Translatable("fix the bug") || zh.Readable("fix the bug"))
-            return "zh2en ignores english";
-        var en = new AppConfig { Direction = "en2zh" }.Normalize();
-        if (!en.ToChinese("帮我 fix 这个 bug") || en.Readable("你好"))
-            return "en2zh";
+            return "forward ignores english";
+        var en = new AppConfig { Direction = "reverse" }.Normalize();
+        if (!en.ToNative("帮我 fix 这个 bug") || en.Readable("你好"))
+            return "reverse";
+        if (new AppConfig { Direction = "zh2en" }.Normalize().Direction != "forward" || new AppConfig { Direction = "en2zh" }.Normalize().Direction != "reverse")
+            return "legacy direction";
         if (!Lang.SameSentence("I went there.", "i went there") || Lang.SameSentence("I went there.", "I go there."))
             return "same sentence";
 
+        // 别的语言对：看文字（假名、谚文、泰文、西里尔字母），都是拉丁字母时看常用词。
+        var failure = PairCheck("zh-CN", "ja", "明日は会議があります", "明天要开会")
+            ?? PairCheck("zh-CN", "ko", "저는 학생입니다", "我是学生")
+            ?? PairCheck("zh-CN", "ru", "Я учусь в университете", "我在上大学")
+            ?? PairCheck("zh-CN", "th", "สวัสดีครับ ยินดีที่ได้รู้จัก", "很高兴认识你")
+            ?? PairCheck("zh-CN", "fr", "Je suis très content de te voir", "很高兴见到你")
+            ?? PairCheck("ja", "en", "I would like a cup of coffee", "コーヒーを一杯ください")
+            ?? PairCheck("ja", "zh-CN", "我想喝咖啡", "コーヒーが飲みたいです")
+            ?? PairCheck("es", "en", "the weather is nice today", "el tiempo está muy bueno hoy")
+            ?? PairCheck("en", "fr", "je suis très content de te voir", "I am glad to see you")
+            ?? PairCheck("en", "de", "ich bin müde und will nach Hause", "I am tired and want to go home");
+        if (failure != null)
+            return failure;
+        var same = new AppConfig { NativeLanguage = "ja", TargetLanguage = "JA" }.Normalize();
+        if (same.NativeLanguage != "ja" || same.TargetLanguage != "en")
+            return "same pair " + same.TargetLanguage;
+        var ja = new AppConfig { NativeLanguage = "zh-CN", TargetLanguage = "ja", Direction = "forward" }.Normalize();
+        if (ja.DirectionLabel != "中→日" || ja.LevelLabel != "高级" || AppConfig.PairLabel(ja.Target, ja.Native) != "日译中")
+            return "pair labels " + ja.DirectionLabel + " " + ja.LevelLabel;
+        if (new AppConfig().Normalize().LevelLabel != "考研" || new AppConfig { NativeLanguage = "xx" }.Normalize().NativeLanguage != "zh-CN")
+            return "default pair";
+        var (french, frenchWords, _) = Translator.SplitWords("Je suis content.\n<<<WORDS>>>\n{\"words\":[{\"word\":\"content\",\"meaning\":\"高兴的\",\"why\":\"常用\"}]}");
+        if (french != "Je suis content." || frenchWords.Count != 1 || frenchWords[0].English != "content" || frenchWords[0].Chinese != "高兴的")
+            return "split words other pair";
+
         // 英译中：译文是中文，查词、朗读、写入用的是更地道的英文。
         form.BeginListening("英→中", "");
-        form.UpdateSource("I go to library yesterday.", Rectangle.Empty, latin: true);
-        form.ShowTranslation("I go to library yesterday.", "我昨天去了图书馆。", "test", toChinese: true, better: "I went to the library yesterday.");
-        if (!form.ToChinese || form.ResultText != "我昨天去了图书馆。")
+        form.UpdateSource("I go to library yesterday.", Rectangle.Empty, sourceIsTarget: true);
+        form.ShowTranslation("I go to library yesterday.", "我昨天去了图书馆。", "test", toNative: true, better: "I went to the library yesterday.");
+        if (!form.ToNative || form.ResultText != "我昨天去了图书馆。")
             return "reverse result";
         if (form.WriteText != "I went to the library yesterday." || form.LookupSentence != "I went to the library yesterday.")
             return "reverse better";
-        form.ShowTranslation("I went to the library yesterday.", "我昨天去了图书馆。", "test", toChinese: true, better: "");
+        form.ShowTranslation("I went to the library yesterday.", "我昨天去了图书馆。", "test", toNative: true, better: "");
         if (form.WriteText.Length != 0 || form.LookupSentence != "I went to the library yesterday.")
             return "reverse already good";
         form.AdoptBetter("Yesterday I went to the library.");
         if (form.WriteText != "Yesterday I went to the library.")
             return "adopt better";
         form.ShowTranslation("政策已经落实了。", "The policy was implemented.", "test");
-        if (form.ToChinese || form.WriteText != "The policy was implemented.")
+        if (form.ToNative || form.WriteText != "The policy was implemented.")
             return "back to english";
 
         // 中文译文要能在字与字之间换行，不能一整句挤在一行里。
@@ -212,6 +239,17 @@ static class Program
                 return "cjk wrap " + layout.Width + "x" + layout.Height;
             if (layout.Runs.Any(run => run.Bounds.Left == 0 && run.Text is "，" or "。" && run.Bounds.Top > 0))
                 return "cjk punctuation at line start";
+        }
+
+        // 泰文词和词之间不空格，也要能换行；声调、元音符号不能和前面的字拆开。
+        using (var thai = new Font("Leelawadee UI", 14F))
+        {
+            var layout = new EnglishLayout();
+            layout.Build("ฉันอยากไปห้องสมุดเพื่อทบทวนภาษาอังกฤษทุกวันเพราะการสอบใกล้เข้ามาแล้ว", thai, 200);
+            if (layout.Width > 200 || layout.Height < thai.Height * 2)
+                return "thai wrap " + layout.Width + "x" + layout.Height;
+            if (layout.Runs.Any(run => run.Text.Length > 0 && char.GetUnicodeCategory(run.Text[0]) == System.Globalization.UnicodeCategory.NonSpacingMark))
+                return "thai mark split";
         }
 
         if (!HotkeySpec.TryParse("ctrl+alt+t", out var spec) || spec.ToString() != "Ctrl+Alt+T")
@@ -227,9 +265,35 @@ static class Program
         return null;
     }
 
+    /// <summary>自动方向下：在学的语言要判成反向，母语要判成正向，两边都够翻。</summary>
+    static string? PairCheck(string native, string target, string targetText, string nativeText)
+    {
+        var config = new AppConfig { NativeLanguage = native, TargetLanguage = target }.Normalize();
+        if (!config.ToNative(targetText) || config.ToNative(nativeText))
+            return "pair " + native + ">" + target + " direction";
+        if (!config.Translatable(targetText) || !config.Translatable(nativeText))
+            return "pair " + native + ">" + target + " translatable";
+        return null;
+    }
+
+    /// <summary>「zh-CN>ja」或「zh-CN>ja@reverse」：临时换语言对（和方向），排查、截图用，不改配置文件。</summary>
+    static bool TryApplyPair(AppConfig config, string arg)
+    {
+        var at = arg.IndexOf('@');
+        var pair = at >= 0 ? arg[..at] : arg;
+        var arrow = pair.IndexOf('>');
+        if (arrow <= 0)
+            return false;
+        config.NativeLanguage = pair[..arrow];
+        config.TargetLanguage = pair[(arrow + 1)..];
+        if (at >= 0)
+            config.Direction = arg[(at + 1)..];
+        return true;
+    }
+
     /// <summary>不启动托盘，直接把卡片或设置窗口摆出来，方便截图检查界面。
     /// 给了 shot 路径就在显示后截一张图存下来再退出。</summary>
-    static int Preview(string what, string theme, string? shot)
+    static int Preview(string what, string theme, string? shot, string? pair)
     {
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
@@ -238,6 +302,12 @@ static class Program
         var parts = theme.Split('+');
         var config = AppConfig.Load();
         config.Accent = parts.Length > 1 ? parts[1] : config.Accent;
+        // ja、fr 两张示例卡片用自己的语言对；别的可以用 pair 参数换，比如 zh-CN>ko。
+        if (what is "ja" or "fr")
+            pair = "zh-CN>" + what;
+        if (pair != null)
+            TryApplyPair(config, pair);
+        config = config.Normalize();
         Theme.Apply(parts[0], "normal", config.Accent);
         if (what.StartsWith("settings", StringComparison.Ordinal))
         {
@@ -272,23 +342,59 @@ static class Program
         if (shot != null)
             CaptureLater(card, shot);
         card.CloseRequested += (_, _) => Application.ExitThread();
+        var listen = config.ArrowLabel(false) + " · " + config.LevelLabel;
+        var hint = "请开始输入" + config.Native.Name + "或" + config.Target.Name + "…  Esc 取消";
         switch (what)
         {
             case "idle":
-                card.ShowIdle("Vibelish", "按 Ctrl+Alt+T 开始，输入中文或英文，按 Enter 完成", OverlayForm.CardPlace.TopCenter);
+                card.ShowIdle("Vibelish", "按 Ctrl+Alt+T 开始，输入" + config.Native.Name + "或" + config.Target.Name + "，按 Enter 完成", OverlayForm.CardPlace.TopCenter);
+                break;
+            case "ja":
+                // 中译日：译文、重点词用日文字体。
+                card.BeginListening(listen, hint);
+                card.UpdateSource("我们明天下午三点开会，请大家准时参加。", Rectangle.Empty);
+                card.ShowTranslation(
+                    "我们明天下午三点开会，请大家准时参加。",
+                    "明日の午後三時から会議を行いますので、皆様時間通りにご出席ください。",
+                    "deepseek-chat · 高级");
+                card.ShowStudy(new[]
+                {
+                    new StudyWord("会議を行う", "召开会议", "比「会議がある」更正式"),
+                    new StudyWord("時間通りに", "准时", "固定说法"),
+                    new StudyWord("ご出席ください", "请出席", "敬语，比「来てください」礼貌"),
+                });
+                card.SetStatus("已复制日文", OverlayForm.StatusKind.Success);
+                break;
+            case "fr":
+                // 法译中：自己写的法文 → 中文意思 + 更地道的说法。
+                const string french = "je veux aller a la bibliotheque demain pour etudier le francais";
+                card.BeginListening(config.ArrowLabel(true) + " · " + config.LevelLabel, hint);
+                card.UpdateSource(french, Rectangle.Empty, sourceIsTarget: true);
+                card.ShowTranslation(
+                    french,
+                    "我明天想去图书馆学法语。",
+                    "deepseek-chat · 法译中",
+                    toNative: true,
+                    better: "Demain, je compte me rendre à la bibliothèque afin d'étudier le français.");
+                card.ShowStudy(new[]
+                {
+                    new StudyWord("compter faire", "打算做", "比 vouloir 更书面"),
+                    new StudyWord("se rendre à", "前往", "比 aller à 更正式"),
+                    new StudyWord("afin de", "为了", "替代 pour，书面语"),
+                });
                 break;
             case "reverse":
             case "reverse-good":
                 // 英译中：自己写的英文 → 中文意思 + 更地道的说法。
                 var good = what == "reverse-good";
                 var mine = good ? "Could you help me refactor this function so that it is easier to test?" : "help me fix this bug, the login page always crash when user click the button";
-                card.BeginListening("英→中 · 考研", "请开始输入中文或英文…  Esc 取消");
-                card.UpdateSource(mine, Rectangle.Empty, latin: true);
+                card.BeginListening(config.ArrowLabel(true) + " · " + config.LevelLabel, hint);
+                card.UpdateSource(mine, Rectangle.Empty, sourceIsTarget: true);
                 card.ShowTranslation(
                     mine,
                     good ? "你能帮我重构一下这个函数，让它更容易测试吗？" : "帮我修复这个 bug：用户点击按钮时，登录页面总是崩溃。",
                     "deepseek-chat · 英译中",
-                    toChinese: true,
+                    toNative: true,
                     better: good ? "" : "Please help me fix this bug: the login page invariably crashes whenever a user clicks the button.");
                 card.ShowStudy(good
                     ? new[] { new StudyWord("refactor", "重构", "编程常用词") }
@@ -300,23 +406,23 @@ static class Program
                     });
                 break;
             case "listening":
-                card.BeginListening("中→英 · 考研", "请开始输入中文或英文…  Esc 取消");
+                card.BeginListening(listen, hint);
                 card.UpdateSource("我今天想去图书馆复习英语", Rectangle.Empty);
                 card.SetTranslating(true);
                 break;
             case "stream":
-                card.BeginListening("中→英 · 考研", "请开始输入中文或英文…  Esc 取消");
+                card.BeginListening(listen, hint);
                 card.UpdateSource("虽然准备考研很辛苦，但我相信坚持下去一定会有收获。", Rectangle.Empty);
                 card.SetTranslating(true);
                 card.ShowPartial("虽然准备考研很辛苦，但我相信坚持下去一定会有收获。", "Arduous as preparation for the postgraduate entrance examination may be, I remain");
                 break;
             case "error":
-                card.BeginListening("中→英 · 考研", "请开始输入中文或英文…  Esc 取消");
+                card.BeginListening(listen, hint);
                 card.UpdateSource("我今天想去图书馆复习英语", Rectangle.Empty);
                 card.ShowTranslationError("接口返回 401（密钥不对或没有权限）：Incorrect API key provided");
                 break;
             default:
-                card.BeginListening("中→英 · 考研", "请开始输入中文或英文…  Esc 取消");
+                card.BeginListening(listen, hint);
                 card.ShowTranslation(
                     "虽然准备考研很辛苦，但我相信坚持下去一定会有收获。",
                     "Arduous as preparation for the postgraduate entrance examination may be, I remain convinced that perseverance will ultimately yield its rewards.",
@@ -340,7 +446,7 @@ static class Program
                         "yield = 给出，引申为产出、让出", "", true, ""));
                 }
 
-                card.SetStatus("已复制英文", OverlayForm.StatusKind.Success);
+                card.SetStatus("已复制" + config.Target.Name, OverlayForm.StatusKind.Success);
                 break;
         }
 
@@ -411,11 +517,13 @@ static class Program
 
         if (args.Length >= 1 && args[0] == "--selftest-speech")
         {
-            // 只检查能不能找到英文语音，不出声。
+            // 只检查能不能找到语音，不出声。默认查英文，也可以给一个文化名，比如 ja-JP。
             _ = AttachConsole(AttachParentProcess);
-            Console.WriteLine(Speech.Available ? "ok" : "FAIL " + Speech.MissingHint);
+            var culture = args.Length >= 2 ? args[1] : "en-US";
+            var voice = Speech.HasVoice(culture);
+            Console.WriteLine(voice ? "ok " + culture : "FAIL " + Speech.MissingHint(culture));
             Speech.Dispose();
-            return Speech.Available ? 0 : 1;
+            return voice ? 0 : 1;
         }
 
         if (args.Length >= 1 && args[0] == "--hook-target")
@@ -515,21 +623,30 @@ static class Program
             _ = AttachConsole(AttachParentProcess);
             if (args.Length < 2)
             {
-                Console.WriteLine("用法：Vibelish.exe --translate 要翻译的中文或英文 [引擎] [接口地址 模型]");
+                Console.WriteLine("用法：Vibelish.exe --translate 要翻译的文字 [母语>在学的语言[@方向]] [引擎] [接口地址 模型]");
                 return 2;
             }
 
-            // 第三个参数可以临时换引擎：auto / openai / transmart / mymemory / google。
+            // 可以临时换语言对，比如 zh-CN>ja 或 zh-CN>ja@reverse。
             var probe = AppConfig.Load();
-            if (args.Length >= 3)
-                probe.Engine = args[2];
-            // 再往后是接口地址和模型，排查用，不改配置文件。
-            if (args.Length >= 5)
+            var rest = new List<string>();
+            for (var i = 2; i < args.Length; i++)
             {
-                probe.OpenAiBaseUrl = args[3];
-                probe.OpenAiModel = args[4];
+                if (!TryApplyPair(probe, args[i]))
+                    rest.Add(args[i]);
             }
-            var translator = new Translator(probe.Normalize());
+
+            // 剩下的第一个可以临时换引擎：auto / openai / transmart / mymemory / google。
+            if (rest.Count >= 1)
+                probe.Engine = rest[0];
+            // 再往后是接口地址和模型，排查用，不改配置文件。
+            if (rest.Count >= 3)
+            {
+                probe.OpenAiBaseUrl = rest[1];
+                probe.OpenAiModel = rest[2];
+            }
+            probe = probe.Normalize();
+            var translator = new Translator(probe);
             var watch = System.Diagnostics.Stopwatch.StartNew();
             long first = 0;
             var result = translator.TranslateAsync(args[1], CancellationToken.None, _ =>
@@ -540,7 +657,8 @@ static class Program
             Console.WriteLine(result.Ok ? result.Text : "ERROR " + result.Detail);
             if (result.Better is { Length: > 0 } better)
                 Console.WriteLine("better=" + better);
-            Console.WriteLine("engine=" + result.Detail + " dir=" + (result.ToChinese ? "en2zh" : "zh2en")
+            Console.WriteLine("engine=" + result.Detail + " pair=" + probe.NativeLanguage + ">" + probe.TargetLanguage
+                + " dir=" + (result.ToNative ? "reverse" : "forward")
                 + " first=" + (result.FirstMs > 0 ? result.FirstMs : first) + "ms total=" + watch.ElapsedMilliseconds + "ms"
                 + " words=" + (result.Words?.Count ?? 0));
             return result.Ok ? 0 : 1;
@@ -550,7 +668,8 @@ static class Program
             return Preview(
                 args.Length >= 2 ? args[1] : "card",
                 args.Length >= 3 ? args[2] : "system",
-                args.Length >= 4 ? args[3] : null);
+                args.Length >= 4 && args[3] != "-" ? args[3] : null,
+                args.Length >= 5 ? args[4] : null);
 
         if (args.Length >= 1 && args[0] == "--uninstall")
         {

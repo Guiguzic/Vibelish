@@ -28,7 +28,14 @@ sealed class AppConfig
     /// <summary>输完停顿多久开始翻译。快 350 / 适中 600 / 稳 1000。</summary>
     public int PauseMs { get; set; } = 600;
 
-    /// <summary>翻译方向：auto（有中文就中译英，纯英文就英译中）、zh2en、en2zh。</summary>
+    /// <summary>母语：反向翻译的译文、单词释义都用它。代码见 <see cref="Languages.All"/>。</summary>
+    public string NativeLanguage { get; set; } = "zh-CN";
+
+    /// <summary>在学的语言：正向翻译翻成它，查词、朗读、更地道的说法也都是它。</summary>
+    public string TargetLanguage { get; set; } = "en";
+
+    /// <summary>翻译方向：auto（看这段更像哪种语言）、forward（母语 → 在学的语言）、reverse（在学的语言 → 母语）。
+    /// 1.2.0 存的 zh2en / en2zh 读进来会换成 forward / reverse。</summary>
     public string Direction { get; set; } = "auto";
 
     public bool AutoCopy { get; set; }
@@ -37,7 +44,7 @@ sealed class AppConfig
     /// <summary>译完自动挑出值得记的词（需要大模型接口）。</summary>
     public bool StudyWords { get; set; } = true;
 
-    /// <summary>kaoyan (考研英语), cet6 (六级) or plain (日常).</summary>
+    /// <summary>在学的语言写到多难：kaoyan（考研 / 高级）、cet6（六级 / 中级）、plain（日常）。名字是历史原因。</summary>
     public string EnglishLevel { get; set; } = "kaoyan";
 
     /// <summary>例如 Ctrl+Alt+T。被占用时会自动换成备用组合。</summary>
@@ -70,7 +77,7 @@ sealed class AppConfig
     /// <summary>重点词怎么显示：word（只有单词）、meaning（单词 + 中文释义）、detail（再加一句说明）。</summary>
     public string StudyStyle { get; set; } = "meaning";
 
-    /// <summary>点英文里的单词查释义。</summary>
+    /// <summary>点译文里的单词查释义（在学的语言要用空格分词）。</summary>
     public bool ClickLookup { get; set; } = true;
 
     /// <summary>卡片上显示朗读按钮。</summary>
@@ -79,7 +86,7 @@ sealed class AppConfig
     /// <summary>查词时自动读一遍单词。</summary>
     public bool SpeakOnLookup { get; set; }
 
-    /// <summary>朗读语速：slow、normal、fast。用 Windows 自带的英文语音。</summary>
+    /// <summary>朗读语速：slow、normal、fast。用 Windows 自带的在学的语言的语音。</summary>
     public string SpeakSpeed { get; set; } = "normal";
 
     /// <summary>卡片位置：input（跟着输入框）、top（屏幕顶部）、bottom（屏幕底部）。</summary>
@@ -184,7 +191,16 @@ sealed class AppConfig
     public AppConfig Normalize()
     {
         Engine = Pick(Engine, "auto", "auto", "openai", "transmart", "mymemory", "google");
-        Direction = Pick(Direction, "auto", "auto", "zh2en", "en2zh");
+        Direction = (Direction ?? "").Trim().ToLowerInvariant() switch
+        {
+            "zh2en" or "forward" => "forward",
+            "en2zh" or "reverse" => "reverse",
+            _ => "auto",
+        };
+        NativeLanguage = Languages.Normalize(NativeLanguage, "zh-CN");
+        TargetLanguage = Languages.Normalize(TargetLanguage, "en");
+        if (NativeLanguage == TargetLanguage)
+            TargetLanguage = NativeLanguage == "en" ? "zh-CN" : "en";
         EnglishLevel = Pick(EnglishLevel, "kaoyan", "kaoyan", "cet6", "plain");
         Theme = Pick(Theme, "system", "system", "dark", "light");
         CardTextSize = Pick(CardTextSize, "normal", "small", "normal", "large");
@@ -225,39 +241,54 @@ sealed class AppConfig
         return b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168);
     }
 
-    public string LevelLabel => EnglishLevel switch
+    public Language Native => Languages.Find(NativeLanguage);
+
+    public Language Target => Languages.Find(TargetLanguage);
+
+    /// <summary>难度的叫法：中文母语学英文叫考研 / 六级，其他语言叫高级 / 中级。</summary>
+    public static string[] LevelLabels(Language native, Language target) =>
+        Languages.IsChineseEnglish(native, target) ? ["考研", "六级", "日常"] : ["高级", "中级", "日常"];
+
+    public string LevelLabel => LevelLabels(Native, Target)[EnglishLevel switch
     {
-        "cet6" => "六级",
-        "plain" => "日常",
-        _ => "考研",
-    };
+        "cet6" => 1,
+        "plain" => 2,
+        _ => 0,
+    }];
 
-    /// <summary>这段文字该翻成中文（英译中）还是英文（中译英）。</summary>
-    public bool ToChinese(string text) => Direction == "en2zh" || (Direction == "auto" && !Lang.HasCjk(text));
+    /// <summary>这段文字该翻回母语（反向），还是翻成在学的语言（正向）。</summary>
+    public bool ToNative(string text) =>
+        Direction == "reverse" || (Direction == "auto" && Lang.LooksLikeTarget(text, Native, Target));
 
-    /// <summary>这段文字够不够翻：中译英要有中文，英译中要有英文单词。</summary>
+    /// <summary>这段文字够不够翻：要有足够的原文语言的字。</summary>
     public bool Translatable(string text)
     {
         var trimmed = text.Trim();
         if (trimmed.Length < 2)
             return false;
-        return ToChinese(trimmed) ? Lang.HasEnglish(trimmed) : Lang.HasCjk(trimmed);
+        return Lang.HasEnough(trimmed, ToNative(trimmed) ? Target : Native);
     }
 
     /// <summary>输入框里的内容值不值得读：方向允许的语言出现了才算。</summary>
     public bool Readable(string text) => Direction switch
     {
-        "zh2en" => Lang.HasCjk(text),
-        "en2zh" => Lang.HasEnglish(text),
-        _ => Lang.HasCjk(text) || Lang.HasEnglish(text),
+        "forward" => Lang.HasEnough(text, Native),
+        "reverse" => Lang.HasEnough(text, Target),
+        _ => Lang.HasEnough(text, Native) || Lang.HasEnough(text, Target),
     };
 
+    /// <summary>「中→英」「英→中」；自动时是「中英互译」。</summary>
     public string DirectionLabel => Direction switch
     {
-        "zh2en" => "中→英",
-        "en2zh" => "英→中",
-        _ => "中英互译",
+        "forward" => Native.Short + "→" + Target.Short,
+        "reverse" => Target.Short + "→" + Native.Short,
+        _ => Native.Short + Target.Short + "互译",
     };
+
+    public string ArrowLabel(bool toNative) => toNative ? Target.Short + "→" + Native.Short : Native.Short + "→" + Target.Short;
+
+    /// <summary>「中译英」这种叫法，托盘菜单和设置里用。</summary>
+    public static string PairLabel(Language from, Language to) => from.Short + "译" + to.Short;
 
     public AppConfig Clone() => (AppConfig)MemberwiseClone();
 
