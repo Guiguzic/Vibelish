@@ -44,6 +44,9 @@ sealed class TrayApplicationContext : ApplicationContext
     string _writeAfter = "";
     // 刚写进输入框的译文：读回来就是它，不再当新的一句去翻。
     string _written = "";
+    // 进入「留着上一句」时按过多少个键。终端里回车以后程序会往屏幕上输出（grok 的回答），
+    // 光标也会停在输出里；没再按键就不认输入框的变化，免得把程序的输出当成自己打的字。
+    int _typedAtHold;
     readonly MouseGesture _gesture;
     DragFrame? _dragFrame;
     CancellationTokenSource? _reading;
@@ -371,7 +374,7 @@ sealed class TrayApplicationContext : ApplicationContext
         // 回车发出去以后：输入框空着就一直留着上一句，开始打下一句再换。
         if (_held)
         {
-            if (shown.Length == 0 || string.Equals(shown, _sentence, StringComparison.Ordinal))
+            if (shown.Length == 0 || string.Equals(shown, _sentence, StringComparison.Ordinal) || _hotkey.Typed == _typedAtHold)
                 return;
             _held = false;
             _written = "";
@@ -564,6 +567,7 @@ sealed class TrayApplicationContext : ApplicationContext
             return;
         CompleteSentence();
         _held = true;
+        _typedAtHold = _hotkey.Typed;
         TraceLog.Note("submit len=" + _sentence.Length);
     }
 
@@ -631,6 +635,7 @@ sealed class TrayApplicationContext : ApplicationContext
 
         _written = text;
         _held = true;
+        _typedAtHold = _hotkey.Typed;
         TraceLog.Note("write ok=" + ok + " terminal=" + (field?.Terminal ?? false) + " remote=" + (field?.Remote ?? false));
         _overlay.SetStatus(ok ? "已写入输入框" : "写入失败，请再按一次 Ctrl+Shift+Enter",
             ok ? OverlayForm.StatusKind.Success : OverlayForm.StatusKind.Error);
@@ -685,6 +690,17 @@ sealed class TrayApplicationContext : ApplicationContext
         {
             TraceLog.Note("drag ocr error " + TraceLog.Safe(ex.Message));
         }
+    }
+
+    /// <summary>排查用：不用真鼠标，直接走一遍右键拖动翻译。</summary>
+    internal Task TestDragAsync(Rectangle area) => ReadAreaAsync(area);
+
+    internal void TestSession(bool start)
+    {
+        if (start)
+            StartSession();
+        else
+            EndSession(cancel: false);
     }
 
     internal static string JoinLines(IReadOnlyList<OcrReader.OcrLine> lines)

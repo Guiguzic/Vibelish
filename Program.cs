@@ -744,6 +744,88 @@ static class Program
             return 0;
         }
 
+        if (args.Length >= 1 && args[0] == "--stress-drag")
+        {
+            // 排查卡死：起一个完整的托盘程序，开始听写后连做两次右键拖动翻译，另一个线程一直量 UI 线程的响应。
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            _ = AttachConsole(AttachParentProcess);
+            Application.EnableVisualStyles();
+            var context = new TrayApplicationContext(quiet: true);
+            var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+            var worst = 0L;
+            var stop = false;
+            var pinger = new Thread(() =>
+            {
+                while (!Volatile.Read(ref stop))
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    using var done = new ManualResetEventSlim();
+                    ui.Post(_ => done.Set(), null);
+                    if (!done.Wait(20000))
+                    {
+                        Console.WriteLine("UI HUNG >20s");
+                        Environment.Exit(9);
+                    }
+
+                    worst = Math.Max(worst, sw.ElapsedMilliseconds);
+                    if (sw.ElapsedMilliseconds > 1000)
+                        Console.WriteLine("ui stall " + sw.ElapsedMilliseconds + "ms at " + DateTime.Now.ToString("HH:mm:ss"));
+                    Thread.Sleep(100);
+                }
+            }) { IsBackground = true };
+            var steps = new System.Windows.Forms.Timer { Interval = 1000 };
+            var tick = 0;
+            var area = new Rectangle(int.Parse(args.Length > 1 ? args[1] : "200"), int.Parse(args.Length > 2 ? args[2] : "300"), 700, 40);
+            steps.Tick += (_, _) =>
+            {
+                tick++;
+                if (tick == 1) { Console.WriteLine("start session"); context.TestSession(true); }
+                if (tick == 3) { Console.WriteLine("drag 1"); _ = context.TestDragAsync(area); }
+                if (tick == 5) { Console.WriteLine("drag 2"); _ = context.TestDragAsync(new Rectangle(area.X, area.Y + 40, area.Width, area.Height)); }
+                if (tick == 70) { steps.Stop(); Volatile.Write(ref stop, true); Console.WriteLine("worst ui stall " + worst + "ms"); Application.ExitThread(); }
+            };
+            steps.Start();
+            pinger.Start();
+            Application.Run(context);
+            return 0;
+        }
+
+        if (args.Length >= 1 && args[0] == "--stress-stream")
+        {
+            // 排查：把一段很长的中文回答按流式一点点喂给卡片，看每一步花多久。
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            _ = AttachConsole(AttachParentProcess);
+            var config = AppConfig.Load();
+            Theme.Apply(config.Theme, config.CardTextSize, config.Accent);
+            using var card = new OverlayForm();
+            card.ApplyOptions(config);
+            card.ApplyTheme();
+            var source = "那到我们的红绿灯的头了，我们的红绿灯的像头其实就是那种擅照的比如闯红灯啊或者是什么违舰等等的像头你看看用什么界面";
+            var answer = "可以，先分清两件事：**接入接口**（怎么拿到摄像头画面/抓拍图）和**展示界面**（给谁看、怎么看）。你说的“闯红灯电子警察”属于卡口/电警类设备，一般有三种接法：\n\n1. **厂商平台 SDK**：海康、大华都有，能拿到实时视频和抓拍记录。\n2. **GB/T 28181**：国标协议，平台对接常用。\n3. **RTSP 直连**：最简单，只能拿视频流。\n\n展示界面建议做成网页：左边路口列表，中间实时画面，右边抓拍记录和违章类型统计。";
+            card.BeginListening("中→英 · 考研", "请开始输入…");
+            card.UpdateSource(source, Rectangle.Empty);
+            card.SetTranslating(true);
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            long worst = 0;
+            for (var n = 4; n <= answer.Length; n += 3)
+            {
+                var step = System.Diagnostics.Stopwatch.StartNew();
+                card.ShowPartial(source, answer[..n]);
+                Application.DoEvents();
+                worst = Math.Max(worst, step.ElapsedMilliseconds);
+                if (step.ElapsedMilliseconds > 500)
+                    Console.WriteLine("slow n=" + n + " ms=" + step.ElapsedMilliseconds + " size=" + card.Size);
+            }
+
+            var stressParts = new[] { new SentencePart("可以", "other", "回答"), new SentencePart("先分清两件事", "verb", "要做的事"), new SentencePart("**接入接口**", "object", "第一件"), new SentencePart("展示界面", "object", "第二件"), new SentencePart("海康、大华都有", "clause", "说明") };
+            var stressStep = System.Diagnostics.Stopwatch.StartNew();
+            card.ShowTranslation(source, answer, "test", coach: new Coaching(Array.Empty<CoachFix>(), "", "很长的点拨" + new string('啊', 200), stressParts));
+            Console.WriteLine("final ms=" + stressStep.ElapsedMilliseconds);
+            Application.DoEvents();
+            Console.WriteLine("done total=" + watch.ElapsedMilliseconds + "ms worst=" + worst + "ms size=" + card.Size);
+            return 0;
+        }
+
         if (args.Length >= 2 && args[0] == "--ocr-hwnd")
         {
             Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);

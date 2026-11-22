@@ -162,6 +162,11 @@ sealed class GlobalHotkey : IDisposable
     public string Error { get; private set; } = "";
     public bool Composing { get; set; }
 
+    int _typed;
+
+    /// <summary>听写期间真按下的键（不算回车、Esc、修饰键和程序模拟的按键）。用来分辨输入框变了是自己在打字，还是程序在输出。</summary>
+    public int Typed => Volatile.Read(ref _typed);
+
     public event Action? ToggleRequested;
 
     /// <summary>Esc：结束听写，这句算完成（参数恒为 false，不是取消）。</summary>
@@ -245,6 +250,14 @@ sealed class GlobalHotkey : IDisposable
     {
         try
         {
+            if (code >= 0 && (int)wParam is WmKeyDown or WmSysKeyDown)
+            {
+                var typed = Marshal.PtrToStructure<KbdLl>(lParam);
+                if ((typed.Flags & 0x10) == 0 && typed.VkCode is not (VkReturn or VkEscape or VkShift or VkControl or VkMenu)
+                    and not (>= 0xA0 and <= 0xA5) and not (0x5B or 0x5C))
+                    Interlocked.Increment(ref _typed);
+            }
+
             if (code >= 0 && !Composing)
             {
                 var message = (int)wParam;

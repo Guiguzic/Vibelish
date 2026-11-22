@@ -13,7 +13,9 @@ sealed class MouseGesture : IDisposable
     const int WmMouseMove = 0x0200;
     const int WmRButtonDown = 0x0204;
     const int WmRButtonUp = 0x0205;
-    const int Threshold = 12;
+    // 右键单击时手抖一下不能算拖动（终端里右键是粘贴，误判就把粘贴吞了）：要拖得够远、按得够久。
+    const int Threshold = 28;
+    const int MinHoldMs = 180;
 
     readonly HookProc _proc;
     readonly Action<Action> _dispatch;
@@ -21,6 +23,7 @@ sealed class MouseGesture : IDisposable
     bool _pressed;
     bool _dragging;
     Point _start;
+    long _pressedAt;
     Point _last;
     long _lastMoveSent;
 
@@ -165,12 +168,14 @@ sealed class MouseGesture : IDisposable
                                 break;
                             _pressed = true;
                             _dragging = false;
+                            _pressedAt = Environment.TickCount64;
                             _start = point;
                             _last = point;
                             return (IntPtr)1;
                         case WmMouseMove when _pressed:
                             _last = point;
-                            if (!_dragging && (Math.Abs(point.X - _start.X) > Threshold || Math.Abs(point.Y - _start.Y) > Threshold))
+                            if (!_dragging && Environment.TickCount64 - _pressedAt >= MinHoldMs
+                                && (Math.Abs(point.X - _start.X) > Threshold || Math.Abs(point.Y - _start.Y) > Threshold))
                                 _dragging = true;
                             if (_dragging && Environment.TickCount64 - _lastMoveSent > 15)
                             {
