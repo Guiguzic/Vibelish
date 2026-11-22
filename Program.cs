@@ -550,7 +550,17 @@ static class Program
                     "虽然准备考研很辛苦，但我相信坚持下去一定会有收获。",
                     "Arduous as preparation for the postgraduate entrance examination may be, I remain convinced that perseverance will ultimately yield its rewards.",
                     "deepseek-chat · 考研",
-                    coach: new Coaching(Array.Empty<CoachFix>(), "", "中文「虽然…但…」，英文用倒装 Arduous as … may be 表让步，更书面"));
+                    coach: new Coaching(Array.Empty<CoachFix>(), "",
+                        "中文说「虽然很辛苦」，英文把形容词（描述样子的词）Arduous 提到句首，意思还是「虽然很辛苦」，读起来更书面",
+                        what == "parts"
+                            ? new[]
+                            {
+                                new SentencePart("Arduous as preparation for the postgraduate entrance examination may be", "adverbial-clause", "让步：不管准备考研多辛苦"),
+                                new SentencePart("I", "subject", "说的是「我」"),
+                                new SentencePart("remain convinced", "verb", "一直相信"),
+                                new SentencePart("that perseverance will ultimately yield its rewards", "object-clause", "相信的内容：坚持终会有回报"),
+                            }
+                            : null));
                 card.ShowStudy(new[]
                 {
                     new StudyWord("arduous", "艰辛的", "比 hard 更书面"),
@@ -856,6 +866,8 @@ static class Program
                     Console.WriteLine("habit=" + coach.Habit);
                 if (coach.Tip.Length > 0)
                     Console.WriteLine("tip=" + coach.Tip);
+                foreach (var part in coach.PartList)
+                    Console.WriteLine("part=[" + part.Role + "] " + part.Text + " | " + part.Note);
             }
             Console.WriteLine("engine=" + result.Detail + " pair=" + probe.NativeLanguage + ">" + probe.TargetLanguage
                 + " dir=" + (result.ToNative ? "reverse" : "forward")

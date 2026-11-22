@@ -5,6 +5,7 @@ namespace Vibelish;
 /// <summary>
 /// 卡片上的纠错与点拨。自己写外语时一处一行：类型标签、写错的（划掉）→ 改正的，下面一句为什么；
 /// 最后是这些错误背后的母语思维。写母语时只有一句写法点拨。
+/// 开了句子拆解，再把外语句子按主语、谓语、宾语……一块一块列出来，每块一句大白话。
 /// </summary>
 sealed class CoachPanel : Control
 {
@@ -18,6 +19,7 @@ sealed class CoachPanel : Control
     bool _reverse;
     Language _native = Languages.Find("zh-CN");
     Language _target = Languages.Find("en");
+    bool _beginner = true;
 
     public CoachPanel()
     {
@@ -29,17 +31,20 @@ sealed class CoachPanel : Control
         Visible = false;
     }
 
-    /// <summary>有东西可显示：反向时总要说一句（没错误也说），正向时要有点拨。</summary>
-    public bool HasContent => _coach != null && (_reverse || _coach.Tip.Length > 0);
+    /// <summary>有东西可显示：反向纠错时总要说一句（没错误也说），正向时要有点拨；有拆解也算。</summary>
+    public bool HasContent => _coach != null && ((_reverse && _coach.Checked) || _coach.Tip.Length > 0 || _coach.PartList.Count > 0);
 
-    /// <summary>反向时一处错误、一句思维提示都没有。</summary>
-    public bool Clean => _coach is { Fixes.Count: 0, Habit.Length: 0 };
+    /// <summary>反向时一处错误、一句思维提示、一块拆解都没有。</summary>
+    public bool Clean => _coach is { Fixes.Count: 0, Habit.Length: 0 } && _coach.PartList.Count == 0;
 
-    public void SetLanguages(Language native, Language target)
+    public void SetLanguages(Language native, Language target, bool beginner = true)
     {
         _native = native;
         _target = target;
+        _beginner = beginner;
     }
+
+    static Color RoleColor(string role, Palette p) => SentencePart.ColorFor(role, p.Dark);
 
     public void Show(Coaching? coach, bool reverse)
     {
@@ -94,7 +99,10 @@ sealed class CoachPanel : Control
         // 标签一样宽，后面的文字才对得齐。
         var labels = coach.Fixes.Select(fix => Coaching.Label(fix.Type, _native, _target)).ToList();
         var extra = _reverse ? "思维" : "点拨";
-        var chipWidth = labels.Append(extra).Max(label => Measure(label, chipFont, 200, false).Width) + chipPad * 2;
+        var parts = coach.PartList;
+        var roleLabels = parts.Select(part => SentencePart.Label(part.Role, _native)).ToList();
+        var chipWidth = labels.Append(extra).Concat(roleLabels).Max(label => Measure(label, chipFont, 200, false).Width) + chipPad * 2;
+        var partFont = Theme.CardText(_target.Font, 10F, FontStyle.Bold);
         var x0 = chipWidth + gap;
         var avail = Math.Max(scale(60), width - x0);
         var y = 0;
@@ -109,7 +117,7 @@ sealed class CoachPanel : Control
             return size.Height;
         }
 
-        if (_reverse)
+        if (_reverse && coach.Checked)
         {
             var caption = coach.Fixes.Count > 0 ? "纠错 · " + coach.Fixes.Count + " 处" : "语法、用词都没发现错误";
             y += AddText(caption, captionFont, coach.Fixes.Count > 0 ? p.Dim : p.Success, 0, y, width) + scale(6);
@@ -147,6 +155,28 @@ sealed class CoachPanel : Control
             AddChip(extra, p.Accent, y, noteFont.Height);
             AddText(note, noteFont, p.Body, x0, y, avail);
             y += noteHeight + scale(9);
+        }
+
+        if (parts.Count > 0)
+        {
+            if (y > 0)
+                y += scale(3);
+            var caption = _beginner && _native.Code.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+                ? "句子拆解 · 一块一块看这句是怎么搭起来的"
+                : "句子拆解";
+            y += AddText(caption, captionFont, p.Dim, 0, y, width) + scale(6);
+            for (var i = 0; i < parts.Count; i++)
+            {
+                var part = parts[i];
+                var color = RoleColor(part.Role, p);
+                AddChip(roleLabels[i], color, y, partFont.Height);
+                y += AddText(part.Text, partFont, p.Text, x0, y, avail);
+                var plain = _beginner ? SentencePart.Plain(part.Role, _native) : "";
+                var line = plain.Length > 0 && part.Note.Length > 0 ? plain + " · " + part.Note : plain.Length > 0 ? plain : part.Note;
+                if (line.Length > 0)
+                    y += scale(2) + AddText(line, noteFont, p.Muted, x0, y + scale(2), avail);
+                y += scale(8);
+            }
         }
 
         return Math.Max(0, y - scale(9));

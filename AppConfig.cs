@@ -50,6 +50,17 @@ sealed class AppConfig
     /// <summary>写完的句子（回车发出去，或按 Esc 完成）记进学习记录（错题本、中译英），可以复习、让大模型总结。</summary>
     public bool KeepNotebook { get; set; } = true;
 
+    /// <summary>讲解深浅：beginner（小白，默认：不用术语，用到就当场用大白话解释）、brief（简洁）。</summary>
+    public string ExplainLevel { get; set; } = "beginner";
+
+    /// <summary>句子拆解：把外语句子按主语、谓语、宾语、状语……分块，每块一句大白话（需要大模型接口）。</summary>
+    public bool SentenceParts { get; set; } = true;
+
+    /// <summary>在译文里直接按成分上色，每块下面写上是什么（主语、谓语、宾语从句……）。</summary>
+    public bool ColorParts { get; set; } = true;
+
+    public bool Beginner => !string.Equals(ExplainLevel, "brief", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>按住鼠标右键拖过屏幕上的字：识别出来翻译。</summary>
     public bool DragTranslate { get; set; } = true;
 
@@ -215,6 +226,7 @@ sealed class AppConfig
         CardTextSize = Pick(CardTextSize, "normal", "small", "normal", "large");
         Accent = Pick(Accent, "blue", "blue", "purple", "pink", "orange", "green", "graphite");
         StudyStyle = Pick(StudyStyle, "meaning", "word", "meaning", "detail");
+        ExplainLevel = Pick(ExplainLevel, "beginner", "beginner", "brief");
         SpeakSpeed = Pick(SpeakSpeed, "normal", "slow", "normal", "fast");
         CardPosition = Pick(CardPosition, "input", "input", "top", "bottom");
         AutoHideSeconds = AutoHideSeconds <= 0 ? 0 : Math.Clamp(AutoHideSeconds, 3, 120);

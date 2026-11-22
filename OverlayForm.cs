@@ -41,6 +41,9 @@ sealed class OverlayForm : Form
     readonly ClickableEnglish _english = new();
     readonly TextLabel _betterCaption = new() { SingleLine = true };
     readonly ClickableEnglish _better = new();
+    // 句子拆解：在译文（反向时是更地道的说法）里按成分上色、标名字。
+    IReadOnlyList<SentencePart>? _parts;
+    bool _colorParts = true;
     readonly CoachPanel _coach = new();
     readonly TextLabel _error = new();
     readonly StudyStrip _study = new();
@@ -331,7 +334,8 @@ sealed class OverlayForm : Form
         _native = config.Native;
         _target = config.Target;
         _chat = config.UsesChatForTranslation;
-        _coach.SetLanguages(_native, _target);
+        _colorParts = config.ColorParts;
+        _coach.SetLanguages(_native, _target, config.Beginner);
         ApplyFonts();
         UpdateTips();
         if (IsHandleCreated && Visible)
@@ -349,6 +353,7 @@ sealed class OverlayForm : Form
         _translatedSource = "";
         _betterText = null;
         _coach.Clear();
+        _parts = null;
         _sourceIsTarget = false;
         ApplyFonts();
         _stale = false;
@@ -373,6 +378,7 @@ sealed class OverlayForm : Form
         _translatedSource = "";
         _betterText = null;
         _coach.Clear();
+        _parts = null;
         _sourceIsTarget = false;
         ApplyFonts();
         _stale = false;
@@ -447,6 +453,7 @@ sealed class OverlayForm : Form
         _resultShown = text;
         _betterText = null;
         _coach.Clear();
+        _parts = null;
         _sourceIsTarget = toNative;
         SetDirection(toNative);
         ApplyFonts();
@@ -469,6 +476,7 @@ sealed class OverlayForm : Form
         _resultShown = text;
         _betterText = toNative ? better : null;
         _coach.Show(coach, toNative);
+        _parts = coach?.PartList;
         _sourceIsTarget = toNative;
         SetDirection(toNative);
         ApplyFonts();
@@ -743,6 +751,9 @@ sealed class OverlayForm : Form
         // 中文、日文、泰文这类不用空格分词的语言没法在句子里点词，从重点词里点。
         _english.LookupEnabled = hasResult && _clickLookup && !_toNative && _target.Spaced && HasWord(_resultShown);
         _better.English = _betterText ?? "";
+        var colored = _colorParts && _parts is { Count: > 0 } && !_stale && !_streaming;
+        _english.SetParts(colored && !_toNative ? _parts : null, _native);
+        _better.SetParts(colored && _toNative && _betterText is { Length: > 0 } ? _parts : null, _native);
         _better.ForeColor = p.Text;
         _better.LookupEnabled = BetterVisible && _clickLookup && _target.Spaced && HasWord(_betterText ?? "");
         _betterCaption.ForeColor = _betterText is { Length: 0 } ? p.Success : p.Dim;

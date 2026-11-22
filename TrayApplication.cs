@@ -1085,7 +1085,8 @@ sealed class TrayApplicationContext : ApplicationContext
     void Record(string sentence, TranslateResult result)
     {
         _recordAfter = "";
-        if (!_config.KeepNotebook || result.Coach == null)
+        // 只拆解、没纠错（关了纠错）的不记：错题本要的是错误和点拨。
+        if (!_config.KeepNotebook || result.Coach is not { Checked: true })
             return;
         if (_notebook.Add(sentence, result, _config) is { } entry)
             TraceLog.Note("notebook add kind=" + entry.Kind + " fixes=" + entry.Fixes.Count);

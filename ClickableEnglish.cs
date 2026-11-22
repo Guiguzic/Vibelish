@@ -2,6 +2,7 @@ namespace Vibelish;
 
 /// <summary>
 /// 画出英文译文。鼠标移到单词上会高亮，点一下就查这个词；拖动超过几像素仍是在拖卡片。
+/// 有句子拆解时，按成分给句子上色、画下划线，并在每块下面写上它是什么（主语、谓语、宾语从句……）。
 /// </summary>
 sealed class ClickableEnglish : Control
 {
@@ -32,9 +33,89 @@ sealed class ClickableEnglish : Control
             _english = value;
             _hover = -1;
             _down = -1;
-            _layout.Build(_english, Font, Math.Max(10, Width));
+            MapSpans();
+            Rebuild(Math.Max(10, Width));
             Invalidate();
         }
+    }
+
+    readonly record struct Span(int Start, int End, string Role);
+
+    IReadOnlyList<SentencePart>? _parts;
+    Language _labelLanguage = Languages.Find("zh-CN");
+    readonly List<Span> _spans = new();
+    int[] _runStarts = [];
+
+    /// <summary>句子拆解：按成分上色、标名字。传 null 就恢复成普通文字。</summary>
+    public void SetParts(IReadOnlyList<SentencePart>? parts, Language labelLanguage)
+    {
+        if (ReferenceEquals(parts, _parts) && labelLanguage == _labelLanguage)
+            return;
+        _parts = parts;
+        _labelLanguage = labelLanguage;
+        MapSpans();
+        Rebuild(Math.Max(10, Width));
+        Invalidate();
+    }
+
+    /// <summary>在句子里依次找每一块的位置（从上一块后面接着找，找不到就跳过这块）。</summary>
+    void MapSpans()
+    {
+        _spans.Clear();
+        if (_parts is not { Count: > 0 } parts || _english.Length == 0)
+            return;
+        var cursor = 0;
+        foreach (var part in parts)
+        {
+            var text = part.Text.Trim().TrimEnd(',', '.', ';', '，', '。');
+            if (text.Length == 0)
+                continue;
+            var at = _english.IndexOf(text, cursor, StringComparison.OrdinalIgnoreCase);
+            if (at < 0)
+                at = _english.IndexOf(text, StringComparison.OrdinalIgnoreCase);
+            if (at < 0 || _spans.Any(span => at < span.End && at + text.Length > span.Start))
+                continue;
+            _spans.Add(new Span(at, at + text.Length, part.Role));
+            cursor = at + text.Length;
+        }
+
+        _spans.Sort((a, b) => a.Start.CompareTo(b.Start));
+    }
+
+    Font LabelFont => Theme.Card(7.5F);
+
+    int LabelSpace => _spans.Count > 0 ? LabelFont.Height + 3 : 0;
+
+    void Rebuild(int width)
+    {
+        _layout.Build(_english, Font, width, LabelSpace);
+        // 每段文字在原句里的位置，用来判断它属于哪一块。
+        _runStarts = new int[_layout.Runs.Count];
+        var cursor = 0;
+        for (var i = 0; i < _layout.Runs.Count; i++)
+        {
+            var text = _layout.Runs[i].Text;
+            var at = text.Length == 0 ? -1 : _english.IndexOf(text, cursor, StringComparison.Ordinal);
+            if (at < 0)
+                at = cursor;
+            _runStarts[i] = at;
+            cursor = at + text.Length;
+        }
+    }
+
+    int SpanOf(int run)
+    {
+        if (run >= _runStarts.Length)
+            return -1;
+        var start = _runStarts[run];
+        var end = start + _layout.Runs[run].Text.Length;
+        for (var i = 0; i < _spans.Count; i++)
+        {
+            if (start >= _spans[i].Start && end <= _spans[i].End)
+                return i;
+        }
+
+        return -1;
     }
 
     bool _lookupEnabled;
@@ -109,7 +190,7 @@ sealed class ClickableEnglish : Control
     {
         if (_english.Length == 0 && _loading)
             return new Size(Math.Max(10, width), Font.Height * 2 + Font.Height / 3);
-        _layout.Build(_english, Font, Math.Max(10, width));
+        Rebuild(Math.Max(10, width));
         return new Size(
             Math.Min(Math.Max(10, width), Math.Max(_layout.Width, 1)),
             Math.Max(_layout.Height, Font?.Height ?? 16));
@@ -118,13 +199,13 @@ sealed class ClickableEnglish : Control
     protected override void OnFontChanged(EventArgs e)
     {
         base.OnFontChanged(e);
-        _layout.Build(_english, Font, Math.Max(10, Width));
+        Rebuild(Math.Max(10, Width));
     }
 
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        _layout.Build(_english, Font, Math.Max(10, Width));
+        Rebuild(Math.Max(10, Width));
         Invalidate();
     }
 
@@ -136,7 +217,7 @@ sealed class ClickableEnglish : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         if (_layout.Runs.Count == 0 && _english.Length > 0)
-            _layout.Build(_english, Font, Math.Max(10, Width));
+            Rebuild(Math.Max(10, Width));
 
         var p = Theme.Current;
         var g = e.Graphics;
@@ -164,11 +245,33 @@ sealed class ClickableEnglish : Control
         var flags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine
             | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoClipping;
         var radius = Math.Max(2, Font.Height / 6);
+        var labelFont = LabelFont;
+        var labelled = new HashSet<int>();
+        var labelRight = new Dictionary<int, int>();
+        var stroke = Math.Max(1.5f, Font.Height / 16f);
         for (var i = 0; i < _layout.Runs.Count; i++)
         {
             var run = _layout.Runs[i];
             if (run.Text == "\n")
                 continue;
+            var spanIndex = _spans.Count > 0 ? SpanOf(i) : -1;
+            var roleColor = spanIndex >= 0 ? SentencePart.ColorFor(_spans[spanIndex].Role, p.Dark) : Color.Empty;
+            if (spanIndex >= 0)
+            {
+                // 下划线连成一条：这块里的空格也画。
+                using var line = new Pen(roleColor, stroke);
+                var underline = run.Bounds.Bottom + 1;
+                g.DrawLine(line, run.Bounds.Left, underline, run.Bounds.Right, underline);
+                if (labelled.Add(spanIndex) && !string.IsNullOrWhiteSpace(run.Text))
+                {
+                    var label = SentencePart.Label(_spans[spanIndex].Role, _labelLanguage);
+                    var size = TextRenderer.MeasureText(label, labelFont, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+                    var lineKey = run.Bounds.Y;
+                    var x = Math.Max(run.Bounds.Left, labelRight.TryGetValue(lineKey, out var right) ? right + 4 : 0);
+                    TextRenderer.DrawText(g, label, labelFont, new Point(x, underline + 2), roleColor, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+                    labelRight[lineKey] = x + size.Width;
+                }
+            }
             var hover = LookupEnabled && run.Word && i == _hover;
             var marked = LookupEnabled && run.Word && Marked.Length > 0
                 && string.Equals(run.Text, Marked, StringComparison.OrdinalIgnoreCase);
@@ -180,7 +283,7 @@ sealed class ClickableEnglish : Control
                 g.FillPath(fill, path);
             }
 
-            TextRenderer.DrawText(g, run.Text, Font, run.Bounds, ForeColor, flags);
+            TextRenderer.DrawText(g, run.Text, Font, run.Bounds, spanIndex >= 0 && ForeColor != p.Dim ? roleColor : ForeColor, flags);
             if (hover || marked)
             {
                 using var pen = new Pen(p.Accent, Math.Max(1, Font.Height / 14f));

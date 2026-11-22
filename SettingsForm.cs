@@ -62,6 +62,7 @@ sealed class SettingsForm : Form
     SettingsRow? _engineRow;
     SettingsRow? _levelRow;
     SettingsRow? _autoWriteRow;
+    SettingsRow? _colorPartsRow;
     SettingsRow? _lookupRow;
     int _nativeIndex;
     int _targetIndex;
@@ -90,6 +91,9 @@ sealed class SettingsForm : Form
 
     // 学习
     readonly ToggleSwitch _coaching = new();
+    readonly SegmentedControl _explain = new("小白", "简洁");
+    readonly ToggleSwitch _parts = new();
+    readonly ToggleSwitch _colorParts = new();
     readonly ToggleSwitch _keepNotebook = new();
     readonly ToggleSwitch _study = new();
     readonly SegmentedControl _studyStyle = new("仅单词", "带释义", "详细");
@@ -288,6 +292,9 @@ sealed class SettingsForm : Form
         var words = AddPage(Glyphs.Dictionary, "学习");
         var coach = words.AddGroup("纠错与记录");
         coach.AddRow("纠错与写法点拨", "写英文时逐处指出语法、用词、搭配、中式英语的错误，说清为什么、背后是什么中文思维；写中文时点拨译文和逐字直译哪里不一样（需要大模型接口）", _coaching);
+        coach.AddRow("讲解深浅", "小白：不用术语，非用不可时（比如状语、从句）当场用大白话解释，并指出是这句里的哪几个词。简洁：一句话点到为止", _explain);
+        coach.AddRow("句子拆解", "把英文句子拆成主语、谓语、宾语、状语……一块一块列出来，每块说明它在句子里干什么（需要大模型接口）", _parts);
+        _colorPartsRow = coach.AddRow("在句子里标颜色", "直接在译文里给每块上不同颜色、画下划线，下面写上它是什么，比如谓语、状语、宾语从句", _colorParts);
         coach.AddRow("记到学习记录", "写完的句子（回车发出去，或按 Esc 完成）记进错题本和中译英，可以间隔复习，也能让大模型总结你的问题。只存在这台电脑", _keepNotebook);
         coach.AddRow("学习记录", "今天写了多少、最常犯哪类错、复习错题", LinkButton("打开", () => NotebookRequested?.Invoke(this, EventArgs.Empty)));
         var study = words.AddGroup("重点词");
@@ -361,6 +368,9 @@ sealed class SettingsForm : Form
         _showEngine.Checked = config.ShowEngine;
         _autoHide.SelectedIndex = config.AutoHideSeconds <= 0 ? 0 : config.AutoHideSeconds <= 5 ? 1 : config.AutoHideSeconds <= 10 ? 2 : 3;
         _coaching.Checked = config.Coaching;
+        _explain.SelectedIndex = config.Beginner ? 0 : 1;
+        _parts.Checked = config.SentenceParts;
+        _colorParts.Checked = config.ColorParts;
         _keepNotebook.Checked = config.KeepNotebook;
         _study.Checked = config.StudyWords;
         _studyStyle.SelectedIndex = Math.Max(0, Array.IndexOf(StyleKeys, config.StudyStyle));
@@ -401,6 +411,9 @@ sealed class SettingsForm : Form
         next.ShowEngine = _showEngine.Checked;
         next.AutoHideSeconds = HideValues[_autoHide.SelectedIndex];
         next.Coaching = _coaching.Checked;
+        next.ExplainLevel = _explain.SelectedIndex == 1 ? "brief" : "beginner";
+        next.SentenceParts = _parts.Checked;
+        next.ColorParts = _colorParts.Checked;
         next.KeepNotebook = _keepNotebook.Checked;
         next.StudyWords = _study.Checked;
         next.StudyStyle = StyleKeys[_studyStyle.SelectedIndex];
@@ -413,9 +426,9 @@ sealed class SettingsForm : Form
 
     void WireEvents()
     {
-        foreach (var toggle in new[] { _enabled, _startup, _autoCopy, _autoWrite, _dragTranslate, _stream, _fast, _showSource, _showHints, _showEngine, _coaching, _keepNotebook, _study, _clickLookup, _showSpeak, _speakOnLookup })
+        foreach (var toggle in new[] { _enabled, _startup, _autoCopy, _autoWrite, _dragTranslate, _stream, _fast, _showSource, _showHints, _showEngine, _coaching, _parts, _colorParts, _keepNotebook, _study, _clickLookup, _showSpeak, _speakOnLookup })
             toggle.CheckedChanged += (_, _) => Changed(immediate: true);
-        foreach (var segmented in new[] { _direction, _level, _pause, _theme, _size, _studyStyle, _speed })
+        foreach (var segmented in new[] { _direction, _level, _pause, _theme, _size, _studyStyle, _speed, _explain })
             segmented.SelectedIndexChanged += (_, _) => Changed(immediate: true);
         foreach (var popup in new[] { _engine, _position, _autoHide })
             popup.SelectedIndexChanged += (_, _) => Changed(immediate: true);
@@ -561,6 +574,7 @@ sealed class SettingsForm : Form
         _level.Enabled = key is "auto" or "openai";
         _hotkey.Enabled = _enabled.Checked;
         _studyStyle.Enabled = _study.Checked;
+        _colorParts.Enabled = _parts.Checked;
         var voice = Speech.HasVoice(Languages.All[_targetLanguage.SelectedIndex].Culture);
         _speakOnLookup.Enabled = voice;
         _speed.Enabled = voice;

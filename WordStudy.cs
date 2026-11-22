@@ -30,8 +30,12 @@ sealed record CoachFix(string Wrong, string Right, string Type, string Why);
 /// <param name="Fixes">反向（自己写的外语）时逐处纠错；空列表表示没发现错误。</param>
 /// <param name="Habit">反向时，这些错误背后的母语思维，和外语该怎么想。</param>
 /// <param name="Tip">正向时的写法点拨：译文和逐字直译哪里不一样。</param>
-sealed record Coaching(IReadOnlyList<CoachFix> Fixes, string Habit, string Tip)
+/// <param name="Parts">句子拆解：外语句子按主语、谓语、宾语……分成几块，每块一句大白话。</param>
+/// <param name="Checked">这次请大模型纠错了（关了纠错只要拆解时为 false，卡片不说「没发现错误」）。</param>
+sealed record Coaching(IReadOnlyList<CoachFix> Fixes, string Habit, string Tip, IReadOnlyList<SentencePart>? Parts = null, bool Checked = true)
 {
+    public IReadOnlyList<SentencePart> PartList => Parts ?? [];
+
     public static readonly string[] Types = ["grammar", "word", "collocation", "literal", "spelling", "punctuation"];
 
     /// <summary>错误类型的中文叫法。中文母语学英文时 literal 叫「中式英语」。</summary>
@@ -65,6 +69,112 @@ sealed record Coaching(IReadOnlyList<CoachFix> Fixes, string Habit, string Tip)
         if (t.Contains("gramm") || t.Contains("tense") || t.Contains("article") || t.Contains("preposition") || t.Contains("agreement")
             || t.Contains("order") || t.Contains("structure") || t.Contains("语法"))
             return "grammar";
+        return "other";
+    }
+}
+
+/// <summary>句子里的一块：原文、成分（subject、verb……）、这块在句子里干什么。</summary>
+sealed record SentencePart(string Text, string Role, string Note)
+{
+    public static readonly string[] Roles =
+    [
+        "subject", "verb", "object", "complement", "adverbial", "attributive",
+        "subject-clause", "object-clause", "attributive-clause", "adverbial-clause", "clause", "connector", "other",
+    ];
+
+    /// <summary>每种成分一个固定颜色，句子里的标色和下面的拆解列表用同一套。深色主题换亮一点的。</summary>
+    public static Color ColorFor(string role, bool dark) => role switch
+    {
+        "subject" => dark ? Color.FromArgb(96, 165, 250) : Color.FromArgb(37, 99, 235),
+        "verb" => dark ? Color.FromArgb(248, 113, 113) : Color.FromArgb(220, 38, 38),
+        "object" => dark ? Color.FromArgb(251, 191, 36) : Color.FromArgb(202, 118, 4),
+        "complement" => dark ? Color.FromArgb(250, 204, 21) : Color.FromArgb(161, 98, 7),
+        "adverbial" => dark ? Color.FromArgb(167, 139, 250) : Color.FromArgb(124, 58, 237),
+        "attributive" => dark ? Color.FromArgb(45, 212, 191) : Color.FromArgb(13, 148, 136),
+        "subject-clause" => dark ? Color.FromArgb(147, 197, 253) : Color.FromArgb(29, 78, 216),
+        "object-clause" => dark ? Color.FromArgb(251, 146, 60) : Color.FromArgb(194, 65, 12),
+        "attributive-clause" => dark ? Color.FromArgb(94, 234, 212) : Color.FromArgb(15, 118, 110),
+        "adverbial-clause" => dark ? Color.FromArgb(192, 132, 252) : Color.FromArgb(147, 51, 234),
+        "clause" => dark ? Color.FromArgb(244, 114, 182) : Color.FromArgb(219, 39, 119),
+        _ => dark ? Color.FromArgb(156, 163, 175) : Color.FromArgb(107, 114, 128),
+    };
+
+    /// <summary>成分的叫法。中文母语用课本上的说法，其他母语用英文术语。</summary>
+    public static string Label(string role, Language native) => native.Code.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+        ? role switch
+        {
+            "subject" => "主语",
+            "verb" => "谓语",
+            "object" => "宾语",
+            "complement" => "补语",
+            "adverbial" => "状语",
+            "attributive" => "定语",
+            "subject-clause" => "主语从句",
+            "object-clause" => "宾语从句",
+            "attributive-clause" => "定语从句",
+            "adverbial-clause" => "状语从句",
+            "clause" => "从句",
+            "connector" => "连接词",
+            _ => "其他",
+        }
+        : role switch
+        {
+            "other" => "other",
+            _ => role,
+        };
+
+    /// <summary>小白模式下标签后面跟一句大白话：主语 = 谁 / 什么。</summary>
+    public static string Plain(string role, Language native) => !native.Code.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+        ? ""
+        : role switch
+        {
+            "subject" => "谁 / 什么在做",
+            "verb" => "做什么、是什么",
+            "object" => "动作落在谁身上",
+            "complement" => "把意思补完整",
+            "adverbial" => "什么时候、在哪、怎样、为什么",
+            "attributive" => "修饰前后的名词",
+            "subject-clause" => "一整个小句子当主语",
+            "object-clause" => "一整个小句子当宾语，说的是「什么内容」",
+            "attributive-clause" => "一整个小句子修饰前面的名词",
+            "adverbial-clause" => "一整个小句子说明什么时候、为什么、在什么条件下",
+            "clause" => "句子里套的小句子",
+            "connector" => "把前后连起来",
+            _ => "",
+        };
+
+    public static string NormalizeRole(string role)
+    {
+        var r = role.Trim().ToLowerInvariant().Replace('_', '-').Replace(' ', '-');
+        if (Array.IndexOf(Roles, r) >= 0)
+            return r;
+        if (r.Contains("clause") || r.Contains("从句"))
+        {
+            if (r.Contains("obj") || r.Contains("宾语") || r.Contains("noun"))
+                return "object-clause";
+            if (r.Contains("adverb") || r.Contains("状语"))
+                return "adverbial-clause";
+            if (r.Contains("attribut") || r.Contains("relative") || r.Contains("定语"))
+                return "attributive-clause";
+            if (r.Contains("subj") || r.Contains("主语"))
+                return "subject-clause";
+            return "clause";
+        }
+
+        if (r.Contains("subj") || r.Contains("主语"))
+            return "subject";
+        if (r.Contains("predicate") || r.Contains("verb") || r.Contains("谓语"))
+            return "verb";
+        if (r.Contains("obj") || r.Contains("宾语"))
+            return "object";
+        if (r.Contains("complement") || r.Contains("补语") || r.Contains("表语"))
+            return "complement";
+        if (r.Contains("adverb") || r.Contains("状语"))
+            return "adverbial";
+        if (r.Contains("attribut") || r.Contains("modifier") || r.Contains("定语"))
+            return "attributive";
+        if (r.Contains("conj") || r.Contains("connect") || r.Contains("连"))
+            return "connector";
         return "other";
     }
 }
@@ -313,7 +423,8 @@ static class WordStudy
             var fixesElement = Prop(root, "fixes");
             var hasHabit = Prop(root, "habit") != null;
             var hasTip = Prop(root, "tip") != null;
-            if (fixesElement == null && !hasHabit && !hasTip)
+            var partsElement = Prop(root, "parts");
+            if (fixesElement == null && !hasHabit && !hasTip && partsElement == null)
                 return null;
 
             var fixes = new List<CoachFix>();
@@ -328,13 +439,27 @@ static class WordStudy
                     // 原文和改法一样的不算错（大模型偶尔会把没改的也列出来）。
                     if (wrong.Length == 0 && right.Length == 0 || string.Equals(wrong, right, StringComparison.Ordinal))
                         continue;
-                    fixes.Add(new CoachFix(Cut(wrong, 80), Cut(right, 80), Coaching.NormalizeType(ReadString(item, "type")), Cut(ReadString(item, "why"), 120)));
+                    fixes.Add(new CoachFix(Cut(wrong, 80), Cut(right, 80), Coaching.NormalizeType(ReadString(item, "type")), Cut(ReadString(item, "why"), 240)));
                     if (fixes.Count == 6)
                         break;
                 }
             }
 
-            return new Coaching(fixes, Cut(ReadString(root, "habit"), 160), Cut(ReadString(root, "tip"), 160));
+            var parts = new List<SentencePart>();
+            if (partsElement is { ValueKind: JsonValueKind.Array } partArray)
+            {
+                foreach (var item in partArray.EnumerateArray())
+                {
+                    var text = ReadString(item, "text");
+                    if (text.Length == 0)
+                        continue;
+                    parts.Add(new SentencePart(Cut(text, 120), SentencePart.NormalizeRole(ReadString(item, "role")), Cut(ReadString(item, "note"), 160)));
+                    if (parts.Count == 10)
+                        break;
+                }
+            }
+
+            return new Coaching(fixes, Cut(ReadString(root, "habit"), 300), Cut(ReadString(root, "tip"), 300), parts);
         }
         catch (Exception)
         {
@@ -401,6 +526,12 @@ static class WordStudy
             + "\"better\":\"x\",\"habit\":\"中文不变形，英文靠动词变化表示时间\"}");
         if (coach == null || coach.Fixes.Count != 2 || coach.Fixes[0].Type != "grammar" || coach.Fixes[1].Type != "literal" || coach.Habit.Length == 0)
             return "parse coach";
+        var parsed = ParseCoach("{\"tip\":\"\",\"parts\":[{\"text\":\"We\",\"role\":\"Subject\",\"note\":\"谁：我们\"},{\"text\":\"\",\"role\":\"verb\"},{\"text\":\"have implemented\",\"role\":\"predicate\",\"note\":\"做了什么\"},{\"text\":\"already\",\"role\":\"状语\"}]}");
+        if (parsed == null || parsed.PartList.Count != 3 || parsed.PartList[0].Role != "subject" || parsed.PartList[1].Role != "verb" || parsed.PartList[2].Role != "adverbial")
+            return "parse parts";
+        if (SentencePart.NormalizeRole("object clause") != "object-clause" || SentencePart.NormalizeRole("定语从句") != "attributive-clause"
+            || SentencePart.NormalizeRole("Adverbial_Clause") != "adverbial-clause" || SentencePart.NormalizeRole("subject") != "subject")
+            return "normalize roles";
         if (ParseCoach("{\"better\":\"x\"}") != null || ParseCoach("{\"fixes\":[]}")?.Fixes.Count != 0 || ParseCoach("{\"tip\":\"换主语\"}")?.Tip != "换主语")
             return "parse coach empty";
 
@@ -523,7 +654,8 @@ sealed class EnglishLayout
     public int Width { get; private set; }
     public int Height { get; private set; }
 
-    public void Build(string text, Font font, int maxWidth)
+    /// <param name="labelSpace">每行下面多留的高度，用来写成分标签（主语、谓语……）。</param>
+    public void Build(string text, Font font, int maxWidth, int labelSpace = 0)
     {
         Runs.Clear();
         Width = 0;
@@ -551,7 +683,7 @@ sealed class EnglishLayout
         var lineHeight = Math.Max(
             font.Height,
             TextRenderer.MeasureText("Ag", font, new Size(int.MaxValue, int.MaxValue), flags).Height);
-        var lineStep = lineHeight + Math.Max(2, lineHeight / 6);
+        var lineStep = lineHeight + Math.Max(2, lineHeight / 6) + labelSpace;
         var x = 0;
         var y = 0;
         var maxX = 0;
@@ -606,7 +738,7 @@ sealed class EnglishLayout
         }
 
         Width = maxX;
-        Height = y + lineHeight;
+        Height = y + lineHeight + labelSpace;
     }
 
     /// <summary>行首不能出现的标点（中文的逗号、句号这些也算）。</summary>

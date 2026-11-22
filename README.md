@@ -44,6 +44,8 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 - **点词查义**：点译文里任意一个单词，看音标、义项、它在这句里的意思和记忆点；还能按另一个义项改写一句。
 - **逐处纠错**：英译中时列出每一处错误：写错的 → 改正的、错误类型（语法 / 用词 / 搭配 / 中式英语 / 拼写 / 标点）、一句话讲清规则，最后点出背后的中文思维。
 - **写法点拨**：中译英时说一句译文和逐字直译哪里不一样（换主语、名词化、被动、倒装……），帮你学会用英文的方式组织句子。
+- **小白讲解**：默认按零基础来讲，不堆术语；非用不可的词（状语、从句、过去分词……）当场用大白话解释，并指出是这句里的哪几个词。嫌啰嗦可以在设置 → 学习里换成「简洁」。
+- **句子拆解**：把英文句子拆成主语、谓语、宾语、状语、从句……一块一块列出来，每块说明它在句子里干什么，看懂长句是怎么搭起来的。译文本身也会按成分上不同颜色、画下划线，下面写上是什么（谓语、状语、宾语从句、定语从句……），一眼看出句子骨架。设置 → 学习里可以分别关。
 - **更地道的说法**：英译中时给出改好的英文，可以朗读，也可以一键替换输入框里自己写的那句。
 - **学习记录**：今天写了几句、被纠正几处、连续学了几天；最常犯哪类错；错题本、中译英、间隔复习；让大模型写一份诊断和练习句。见[纠错与学习记录](#纠错与学习记录)。
 - **朗读**：用 Windows 自带的语音，跟着在学的语言换，可调语速。
@@ -52,11 +54,11 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 
 ## 安装
 
-到 [Releases](https://github.com/Guiguzic/Vibelish/releases) 下载 `Vibelish-Setup-1.5.0.exe`，双击安装（也可以[从源码构建](#从源码构建)）。
+到 [Releases](https://github.com/Guiguzic/Vibelish/releases) 下载 `Vibelish-Setup-1.6.0.exe`，双击安装（也可以[从源码构建](#从源码构建)）。
 
 - 装到当前用户目录 `%LOCALAPPDATA%\Programs\Vibelish`，**不需要管理员权限**，也**不需要另外装 .NET**。
 - 已经装过会显示「更新」，沿用原来的开机启动和桌面快捷方式选择，设置和 API Key 都保留。
-- 静默安装：`Vibelish-Setup-1.5.0.exe --silent`（或 `/S`），失败原因写在 `%TEMP%\Vibelish-Setup.log`。
+- 静默安装：`Vibelish-Setup-1.6.0.exe --silent`（或 `/S`），失败原因写在 `%TEMP%\Vibelish-Setup.log`。
 - 卸载：Windows 设置 → 应用 → Vibelish，或开始菜单里的「卸载 Vibelish」。设置文件 `%APPDATA%\Vibelish` 会保留。
 
 > 从旧版「输入翻译」升级：直接装新版就行。安装程序会清掉旧版的程序、快捷方式和开机启动项，第一次启动时自动把旧设置（包括 API Key）搬过来。
@@ -203,6 +205,9 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 | `PauseMs` | 输完停顿多久开始翻译，200–3000，默认 600 |
 | `AutoCopy` / `AutoWrite` | 译完自动复制 / 自动写回输入框（默认关；反向翻译不会自动写入） |
 | `Coaching` | 纠错与写法点拨（默认开，需要大模型） |
+| `ExplainLevel` | 讲解深浅：`beginner`（小白，默认）、`brief`（简洁） |
+| `SentenceParts` | 句子拆解（默认开，需要大模型） |
+| `ColorParts` | 在译文里按成分上色、标名字（默认开） |
 | `KeepNotebook` | 写完的句子（回车发出去或 Esc 完成）记进学习记录（默认开） |
 | `DragTranslate` | 按住右键拖过屏幕上的字就翻译（默认开） |
 | `StudyWords` / `StudyStyle` | 显示重点词 / `word`、`meaning`（默认）、`detail` |
@@ -245,7 +250,7 @@ Vibe coding 的时候，一天里大半时间都在跟 AI 打字对话。反正�
 
 - `bin\Release\net9.0-windows10.0.19041.0\Vibelish.exe`：依赖 .NET 9 桌面运行时
 - `publish\Vibelish.exe`：单文件自包含，旁边的 `PresentationNative_cor3.dll`、`vcruntime140_cor3.dll` 和 `hook\imehook.dll` 不能删
-- `installer\Vibelish-Setup-1.5.0.exe`：安装包，用 Windows 自带的 .NET Framework 4.8 运行
+- `installer\Vibelish-Setup-1.6.0.exe`：安装包，用 Windows 自带的 .NET Framework 4.8 运行
 
 ## 诊断
 

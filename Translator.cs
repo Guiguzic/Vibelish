@@ -75,6 +75,7 @@ sealed class Translator
         probe.EnglishLevel = "plain";
         probe.StudyWords = false;
         probe.Coaching = false;
+        probe.SentenceParts = false;
         return new Translator(probe).TranslateAsync("今天天气不错，我们去公园走走吧。", cancellationToken, _ => { });
     }
 
@@ -200,7 +201,7 @@ sealed class Translator
 
         var toNative = _config.ToNative(text);
         var key = _config.Engine + "\n" + _config.EnglishLevel + "\n" + _config.OpenAiBaseUrl + "\n" + _config.OpenAiModel
-            + "\n" + _config.StudyWords + "\n" + (_config.Coaching && !reading) + "\n" + _config.NativeLanguage + "\n" + _config.TargetLanguage + "\n" + toNative + "\n" + text;
+            + "\n" + _config.StudyWords + "\n" + (_config.Coaching && !reading) + "\n" + _config.ExplainLevel + "\n" + _config.SentenceParts + "\n" + _config.NativeLanguage + "\n" + _config.TargetLanguage + "\n" + toNative + "\n" + text;
         if (_cache.TryGetValue(key, out var cached))
             return cached;
 
@@ -449,7 +450,11 @@ sealed class Translator
         var native = _config.Native;
         var target = _config.Target;
         var coaching = _config.Coaching && !Reading.Value;
-        var prompt = toNative ? ReversePrompt(level, withWords, coaching, native, target) : TranslationPrompt(level, withWords, coaching, native, target);
+        var parts = _config.SentenceParts;
+        var beginner = _config.Beginner;
+        var prompt = toNative
+            ? ReversePrompt(level, withWords, coaching, native, target, beginner, parts)
+            : TranslationPrompt(level, withWords, coaching, native, target, beginner, parts);
         var chat = await ChatAsync(prompt, text, level == "kaoyan" ? 0.3 : 0.2, cancellationToken, onDelta);
         if (!chat.Ok)
             return chat;
@@ -457,11 +462,20 @@ sealed class Translator
         var (translated, words, better) = SplitWords(chat.Text);
         if (translated.Length == 0)
             return new TranslateResult(false, "", "接口没有返回译文");
-        var coach = coaching ? SplitCoach(chat.Text) : null;
+        var coach = coaching || parts ? SplitCoach(chat.Text) : null;
+        if (coach != null)
+        {
+            coach = coach with { Checked = coaching };
+            if (!coaching)
+                coach = coach with { Fixes = Array.Empty<CoachFix>(), Habit = "", Tip = "" };
+            if (!parts)
+                coach = coach with { Parts = null };
+        }
+
         if (!toNative)
         {
             better = null;
-            coach = coach is { Tip.Length: > 0 } ? coach with { Fixes = Array.Empty<CoachFix>(), Habit = "" } : null;
+            coach = coach is { Tip.Length: > 0 } or { PartList.Count: > 0 } ? coach with { Fixes = Array.Empty<CoachFix>(), Habit = "" } : null;
         }
         else
         {
@@ -540,8 +554,28 @@ sealed class Translator
                 payload[pair.Key] = pair.Value;
         }
 
+        // 逐字输出时是「60 秒没有新内容」才算超时（每来一段就重新计时），长的讲解不会被拦腰截断；
+        // 不逐字输出就整体给 2 分钟。
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(ChatTimeout);
+        timeout.CancelAfter(stream ? ChatTimeout : ChatTimeout * 2);
+        if (onDelta != null)
+        {
+            var forward = onDelta;
+            onDelta = text =>
+            {
+                try
+                {
+                    timeout.CancelAfter(ChatTimeout);
+                }
+                catch (ObjectDisposedException)
+                {
+                    // 请求已经结束。
+                }
+
+                forward(text);
+            };
+        }
+
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/chat/completions");
@@ -779,7 +813,7 @@ sealed class Translator
 
     async Task<WordGloss> LookupChatAsync(string word, string sentence, CancellationToken cancellationToken)
     {
-        var chat = await ChatAsync(GlossPrompt(_config.Native, _config.Target), "Word: " + word + "\nSentence: " + TrimForLookup(sentence), 0.2, cancellationToken);
+        var chat = await ChatAsync(GlossPrompt(_config.Native, _config.Target, _config.Beginner), "Word: " + word + "\nSentence: " + TrimForLookup(sentence), 0.2, cancellationToken);
         if (!chat.Ok)
             return WordStudy.Fail(word, chat.Detail);
         return WordStudy.ParseGloss(word, chat.Text, canRewrite: true);
@@ -1049,35 +1083,66 @@ sealed class Translator
         + "\"meaning\" and \"why\" must be in " + native.English + "; keep \"why\" under 16 characters (or 8 words).";
 
     /// <summary>考研难度以前要两次请求（先直译再润色），现在一次到位。</summary>
-    static string TranslationPrompt(string level, bool withWords, bool coaching, Language native, Language target)
+    static string TranslationPrompt(string level, bool withWords, bool coaching, Language native, Language target, bool beginner = false, bool parts = false)
     {
         var prompt = "Translate the " + native.English + " text into " + LevelStyle(level, native, target) + ". " + FidelityRules;
-        if (!withWords && !coaching)
+        if (!withWords && !coaching && !parts)
             return prompt + " Output only the " + target.English + " text, with no notes, labels or quotation marks.";
 
         var fields = new List<string>();
         if (coaching)
             fields.Add("\"tip\":\"...\"");
+        if (parts)
+            fields.Add(PartsField);
         if (withWords)
             fields.Add("\"words\":[{\"word\":\"the word or phrase exactly as it appears in your " + target.English + "\",\"meaning\":\"its meaning in this sentence\",\"why\":\"a short note\"}]");
         prompt += " First output only the " + target.English + " text, with no notes, labels or quotation marks. "
             + "Then output a line containing only " + WordsMarker + " followed by one line of JSON: {" + string.Join(",", fields) + "}. ";
         if (coaching)
-            prompt += TipRule(native, target) + " ";
+            prompt += TipRule(native, target, beginner) + " ";
+        if (parts)
+            prompt += PartsRule(native, target, "your " + target.English + " text", beginner) + " ";
+        if (beginner && (coaching || parts))
+            prompt += BeginnerRule(native) + " ";
         if (withWords)
             prompt += WordRules(native);
         return prompt.TrimEnd();
     }
 
+    const string PartsField = "\"parts\":[{\"text\":\"...\",\"role\":\"subject\",\"note\":\"...\"}]";
+
+    /// <summary>句子拆解：按成分分块，每块一句话说它在句子里干什么。</summary>
+    static string PartsRule(Language native, Language target, string which, bool beginner) =>
+        "\"parts\" breaks one sentence of " + which + " (the first one, or the most instructive one if the first is trivial) into its main building blocks, "
+        + "in order, 3 to 8 blocks that together cover that whole sentence. Each block has \"text\" (the exact words copied from that sentence), "
+        + "\"role\" (one of subject, verb, object, complement, adverbial, attributive, subject-clause, object-clause, attributive-clause, adverbial-clause, connector, other; "
+        + "\"verb\" is the whole verb phrase with its auxiliaries; a whole subordinate clause is one block named by what it does, for example a that-clause after "
+        + "\"believe\" is object-clause, a which/who clause is attributive-clause, a because/when/if clause is adverbial-clause; "
+        + "an introductory participle phrase that sets the scene is adverbial) and \"note\" in " + native.English + ": "
+        + (beginner
+            ? "what this block tells us, in plain words a beginner understands (who does it, what they do, to what, when, where, how, why), under 30 characters (or 15 words)."
+            : "its function, under 16 characters (or 8 words).");
+
+    /// <summary>小白模式：不用术语；非用不可的术语当场用大白话解释，并指出这句里是哪几个词。</summary>
+    static string BeginnerRule(Language native) =>
+        "The learner is a beginner who does not know grammar terms. Write every explanation (\"tip\", \"why\", \"habit\", \"note\") in plain, friendly, everyday "
+        + native.English + ", as if explaining to a 12-year-old. Prefer everyday words to grammar terms. "
+        + "Every grammar term you do write (noun, verb, adjective, adverb, subject, predicate, object, adverbial, attributive, clause, phrase, participle, "
+        + "tense, past tense, article, preposition, passive voice, inversion and so on) MUST be followed immediately by a plain explanation in parentheses "
+        + "that points to the exact words in this sentence, every single time, even for common terms. Use at most two grammar terms in each note."
+        + (native.Code.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+            ? " Example: \"修饰动词 follow 要用副词（专门说明动作做得怎么样的词）well，不能用形容词（说明东西是什么样的词）good。\""
+            : "");
+
     /// <summary>正向的写法点拨：帮学习者从「逐字翻」转到用外语的方式组织句子。</summary>
-    static string TipRule(Language native, Language target) =>
-        "\"tip\" is one short note in " + native.English + " (under 40 characters, or 20 words) that teaches the learner to think in " + target.English
+    static string TipRule(Language native, Language target, bool beginner = false) =>
+        "\"tip\" is " + (beginner ? "a note in " + native.English + " (under 100 characters, or 50 words)" : "one short note in " + native.English + " (under 40 characters, or 20 words)") + " that teaches the learner to think in " + target.English
         + ": point out the one most useful way your " + target.English + " differs from a word-for-word translation "
         + "(for example a different subject, a nominalization, the passive voice, a participle or relative clause, an inversion, a fixed expression), "
         + "quoting the " + target.English + " words it applies to; use an empty string if there is nothing worth noting.";
 
     /// <summary>反向的逐处纠错：只列真正的错误，不把润色当错误。</summary>
-    static string FixRules(Language native, Language target)
+    static string FixRules(Language native, Language target, bool beginner = false)
     {
         var n = native.English;
         var t = target.English;
@@ -1087,17 +1152,17 @@ sealed class Translator
             + literal + ", spelling, or punctuation and capitalization. "
             + "For each, \"wrong\" is the shortest exact span copied from the learner's text, \"right\" is its correction, "
             + "\"type\" is one of grammar, word, collocation, literal, spelling, punctuation, "
-            + "and \"why\" states the rule in " + n + " (under 30 characters, or 15 words). "
+            + "and \"why\" states the rule in " + n + (beginner ? " (under 80 characters, or 40 words)" : " (under 30 characters, or 15 words)") + ". "
             + "Do not list stylistic improvements as mistakes; use [] if there are no mistakes. "
             + "\"habit\": if the mistakes come from thinking in " + n + ", one sentence in " + n
-            + " contrasting how " + n + " says it with how " + t + " thinks (under 50 characters, or 25 words); otherwise an empty string.";
+            + " contrasting how " + n + " says it with how " + t + " thinks" + (beginner ? " (under 100 characters, or 50 words)" : " (under 50 characters, or 25 words)") + "; otherwise an empty string.";
     }
 
     /// <summary>English、Italian、Indonesian 前面是 an。</summary>
     static string Article(string word) => word.Length > 0 && "AEIOU".IndexOf(char.ToUpperInvariant(word[0])) >= 0 ? "an " : "a ";
 
     /// <summary>反向：先翻回母语，学习者对照着看自己写的是不是这个意思；再给一句更地道的说法和重点词。</summary>
-    static string ReversePrompt(string level, bool withWords, bool coaching, Language native, Language target)
+    static string ReversePrompt(string level, bool withWords, bool coaching, Language native, Language target, bool beginner = false, bool parts = false)
     {
         var n = native.English;
         var t = target.English;
@@ -1105,6 +1170,7 @@ sealed class Translator
             + (coaching ? "\"fixes\":[{\"wrong\":\"...\",\"right\":\"...\",\"type\":\"grammar\",\"why\":\"...\"}]," : "")
             + "\"better\":\"...\""
             + (coaching ? ",\"habit\":\"...\"" : "")
+            + (parts ? "," + PartsField : "")
             + (withWords ? ",\"words\":[{\"word\":\"...\",\"meaning\":\"...\",\"why\":\"...\"}]" : "")
             + "}";
         var prompt = (Article(n) == "an " ? "An " : "A ") + n + "-speaking learner of " + t + " wrote the " + t + " text below. "
@@ -1115,7 +1181,11 @@ sealed class Translator
             + "\"better\" is the learner's text corrected and rewritten as " + BetterStyle(level, native, target) + ", keeping the meaning and every detail; "
             + "use an empty string if the original is already correct and natural at that level.";
         if (coaching)
-            prompt += " " + FixRules(native, target);
+            prompt += " " + FixRules(native, target, beginner);
+        if (parts)
+            prompt += " " + PartsRule(native, target, "\"better\" (or the learner's text if \"better\" is empty)", beginner);
+        if (beginner && (coaching || parts))
+            prompt += " " + BeginnerRule(native);
         if (withWords)
         {
             prompt += " \"words\" lists words or phrases taken exactly from \"better\" (or from the original if \"better\" is empty), "
@@ -1151,14 +1221,18 @@ sealed class Translator
         + "Return only JSON, no Markdown: {\"words\":[{\"word\":\"the word as it appears in the sentence\",\"meaning\":\"its meaning in this sentence\",\"why\":\"a short note\"}]}. "
         + "\"meaning\" and \"why\" must be in " + native.English + "; keep \"why\" under 16 characters (or 8 words).";
 
-    static string GlossPrompt(Language native, Language target) =>
+    static string GlossPrompt(Language native, Language target, bool beginner = false) =>
         "You are a language-learning assistant for " + Article(native.English) + native.English + "-speaking learner of " + target.English + ". "
         + "The learner clicked " + Article(target.English) + target.English + " word in a sentence. Return only one JSON object, no Markdown, no explanation: "
         + "{\"lemma\":\"dictionary form\",\"phonetic\":\"/IPA/ (or the usual romanization), or an empty string\","
         + "\"senses\":[{\"pos\":\"part of speech such as v. n. adj.\",\"meaning\":\"a short meaning\",\"fit\":true,"
         + "\"note\":\"what the word means in this sentence, in one or two sentences\"}],\"tip\":\"a memory tip of at most 20 characters (or 10 words)\"}. "
         + "Give 2 to 4 common senses with exactly one \"fit\": true. \"meaning\", \"note\" and \"tip\" must be in " + native.English + ". "
-        + "If you are not sure of the pronunciation, use an empty string; do not invent one.";
+        + "If you are not sure of the pronunciation, use an empty string; do not invent one."
+        + (beginner
+            ? " The learner is a beginner: in \"note\", avoid grammar jargon; if you mention a term such as past participle or adverbial, "
+              + "explain it in plain words in parentheses, using this sentence."
+            : "");
 
     static string RewritePrompt(Language native, Language target) =>
         "You are a language-learning assistant. The learner likes " + Article(target.English) + target.English + " sentence and picked one meaning "
