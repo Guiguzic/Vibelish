@@ -120,7 +120,8 @@ readonly record struct HotkeySpec(bool Ctrl, bool Alt, bool Shift, bool Win, Key
 }
 
 /// <summary>系统热键（注册在一个只收消息的窗口上，不会在模态对话框里丢失），
-/// 外加一个只在听写期间安装的键盘钩子：回车结束、Esc 取消。</summary>
+/// 外加一个只在听写期间安装的键盘钩子：Esc 完成；回车照常发给程序，只顺便记下「这句发出去了」；
+/// Ctrl+Shift+回车把译文写进输入框、替换原文。</summary>
 sealed class GlobalHotkey : IDisposable
 {
     const int WhKeyboardLl = 13;
@@ -163,8 +164,14 @@ sealed class GlobalHotkey : IDisposable
 
     public event Action? ToggleRequested;
 
-    /// <summary>参数为 true 表示 Esc（取消），false 表示回车（完成）。</summary>
+    /// <summary>Esc：结束听写，这句算完成（参数恒为 false，不是取消）。</summary>
     public event Action<bool>? EndRequested;
+
+    /// <summary>回车照常发出去了（不拦截），这句算写完了。</summary>
+    public event Action? SubmitSeen;
+
+    /// <summary>Ctrl+Shift+回车：把译文写进输入框，替换原文（这个组合键会被拦下）。</summary>
+    public event Action? WriteRequested;
 
     /// <summary>注册热键：先试首选组合，被占用时依次试备用组合。</summary>
     public void Register(string preferred)
@@ -245,13 +252,26 @@ sealed class GlobalHotkey : IDisposable
                 {
                     var key = Marshal.PtrToStructure<KbdLl>(lParam);
                     var injected = (key.Flags & 0x10) != 0;
-                    // Shift+回车、Ctrl+回车在聊天软件里是换行，放过去。
-                    var modified = Down(VkShift) || Down(VkControl) || Down(VkMenu);
-                    if (!injected && !modified && key.VkCode is VkReturn or VkEscape)
+                    if (!injected)
                     {
-                        var cancel = key.VkCode == VkEscape;
-                        _dispatch(() => EndRequested?.Invoke(cancel));
-                        return (IntPtr)1;
+                        var ctrl = Down(VkControl);
+                        var shift = Down(VkShift);
+                        var alt = Down(VkMenu);
+                        if (key.VkCode == VkReturn && ctrl && shift && !alt)
+                        {
+                            _dispatch(() => WriteRequested?.Invoke());
+                            return (IntPtr)1;
+                        }
+
+                        // 回车不拦：终端、聊天软件里它就是「发送」。Shift+回车等是换行，不算发出去。
+                        if (key.VkCode == VkReturn && !ctrl && !shift && !alt)
+                            _dispatch(() => SubmitSeen?.Invoke());
+
+                        if (key.VkCode == VkEscape && !ctrl && !shift && !alt)
+                        {
+                            _dispatch(() => EndRequested?.Invoke(false));
+                            return (IntPtr)1;
+                        }
                     }
                 }
             }

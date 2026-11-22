@@ -57,6 +57,7 @@ sealed class SettingsForm : Form
     readonly SegmentedControl _pause = new("快", "适中", "稳");
     readonly ToggleSwitch _autoCopy = new();
     readonly ToggleSwitch _autoWrite = new();
+    readonly ToggleSwitch _dragTranslate = new();
     SettingsRow? _directionRow;
     SettingsRow? _engineRow;
     SettingsRow? _levelRow;
@@ -232,6 +233,8 @@ sealed class SettingsForm : Form
         var keys = general.AddGroup("快捷键");
         _enabledRow = keys.AddRow("全局热键", "", _enabled);
         keys.AddRow("热键", "点一下再按新的组合（要带 Ctrl、Alt 或 Win），Backspace 恢复默认", _hotkey).ControlWidth = 170;
+        keys.AddRow("听写时的按键", "Esc 完成；回车照常发送，这句记为写完、听写继续；Ctrl+Shift+Enter 把输入框里的原文换成译文", null);
+        keys.AddRow("右键拖动翻译", "按住鼠标右键拖过屏幕上的字，识别出来翻译。只点一下右键还是原来的菜单；资源管理器、KiCad、Blender 里不拦", _dragTranslate);
         _hotkeyBox.TextAlign = HorizontalAlignment.Center;
         var start = general.AddGroup("启动");
         start.AddRow("开机自动启动", "登录 Windows 后静默启动到托盘", _startup);
@@ -278,14 +281,14 @@ sealed class SettingsForm : Form
         var layout = card.AddGroup("卡片");
         layout.AddRow("卡片位置", "", _position);
         layout.AddRow("显示原文", "你输入的那句，显示在译文上面", _showSource);
-        layout.AddRow("显示操作提示", "「Enter 完成 · Esc 取消」这类小字", _showHints);
+        layout.AddRow("显示操作提示", "「Esc 完成 · Ctrl+Shift+Enter 换成译文」这类小字", _showHints);
         layout.AddRow("显示译文来源", "模型名或翻译引擎", _showEngine);
-        layout.AddRow("完成后自动收起", "按 Enter 完成以后", _autoHide);
+        layout.AddRow("完成后自动收起", "按 Esc 完成以后", _autoHide);
 
         var words = AddPage(Glyphs.Dictionary, "学习");
         var coach = words.AddGroup("纠错与记录");
         coach.AddRow("纠错与写法点拨", "写英文时逐处指出语法、用词、搭配、中式英语的错误，说清为什么、背后是什么中文思维；写中文时点拨译文和逐字直译哪里不一样（需要大模型接口）", _coaching);
-        coach.AddRow("记到学习记录", "按 Enter 完成的句子记进错题本和中译英，可以间隔复习，也能让大模型总结你的问题。只存在这台电脑", _keepNotebook);
+        coach.AddRow("记到学习记录", "写完的句子（回车发出去，或按 Esc 完成）记进错题本和中译英，可以间隔复习，也能让大模型总结你的问题。只存在这台电脑", _keepNotebook);
         coach.AddRow("学习记录", "今天写了多少、最常犯哪类错、复习错题", LinkButton("打开", () => NotebookRequested?.Invoke(this, EventArgs.Empty)));
         var study = words.AddGroup("重点词");
         study.AddRow("显示重点词", "译完挑出值得记的词，和译文一起生成，不多等（需要大模型接口）", _study);
@@ -301,7 +304,7 @@ sealed class SettingsForm : Form
         info.AddRow("版本", "", new TextLabel { Text = typeof(SettingsForm).Assembly.GetName().Version?.ToString(3) ?? "", SingleLine = true, AlignRight = true, Size = new Size(Theme.Scale(this, 120), Theme.Scale(this, 22)) });
         info.AddRow("配置文件夹", AppConfig.Directory, LinkButton("打开", () => OpenFolder(AppConfig.Directory)));
         info.AddRow("运行日志", "只记事件和长度，不记原文", LinkButton("查看", () => OpenFile(TraceLog.FilePath)));
-        about.AddNote("Vibelish：写 prompt 的时候，顺手学外语。打母语翻成在学的语言；直接用在学的语言写，就给出母语意思和更地道的说法。默认中文学英文（考研难度），也可以在「翻译」里换成日文、法文、西班牙文等。热键开始，Enter 完成，Esc 取消；点单词可以查释义。");
+        about.AddNote("Vibelish：写 prompt 的时候，顺手学外语。打母语翻成在学的语言；直接用在学的语言写，就给出母语意思和更地道的说法。默认中文学英文（考研难度），也可以在「翻译」里换成日文、法文、西班牙文等。热键开始，Esc 完成，Ctrl+Shift+Enter 把原文换成译文；按住右键拖过屏幕上的字也能翻译；点单词可以查释义。");
     }
 
     SettingsPage AddPage(string glyph, string title)
@@ -338,6 +341,7 @@ sealed class SettingsForm : Form
         _pause.SelectedIndex = config.PauseMs <= 450 ? 0 : config.PauseMs <= 800 ? 1 : 2;
         _autoCopy.Checked = config.AutoCopy;
         _autoWrite.Checked = config.AutoWrite;
+        _dragTranslate.Checked = config.DragTranslate;
         _baseUrl.Text = config.OpenAiBaseUrl;
         _apiKey.Text = config.OpenAiApiKey;
         _model.Text = config.OpenAiModel;
@@ -380,6 +384,7 @@ sealed class SettingsForm : Form
         next.PauseMs = _pause.SelectedIndex == originalPause ? _original.PauseMs : PauseValues[_pause.SelectedIndex];
         next.AutoCopy = _autoCopy.Checked;
         next.AutoWrite = _autoWrite.Checked;
+        next.DragTranslate = _dragTranslate.Checked;
         next.OpenAiBaseUrl = _baseUrl.Text.Trim();
         next.OpenAiApiKey = _apiKey.Text.Trim();
         next.OpenAiModel = _model.Text.Trim();
@@ -408,7 +413,7 @@ sealed class SettingsForm : Form
 
     void WireEvents()
     {
-        foreach (var toggle in new[] { _enabled, _startup, _autoCopy, _autoWrite, _stream, _fast, _showSource, _showHints, _showEngine, _coaching, _keepNotebook, _study, _clickLookup, _showSpeak, _speakOnLookup })
+        foreach (var toggle in new[] { _enabled, _startup, _autoCopy, _autoWrite, _dragTranslate, _stream, _fast, _showSource, _showHints, _showEngine, _coaching, _keepNotebook, _study, _clickLookup, _showSpeak, _speakOnLookup })
             toggle.CheckedChanged += (_, _) => Changed(immediate: true);
         foreach (var segmented in new[] { _direction, _level, _pause, _theme, _size, _studyStyle, _speed })
             segmented.SelectedIndexChanged += (_, _) => Changed(immediate: true);

@@ -72,6 +72,72 @@ static class Program
         }
     }
 
+    /// <summary>
+    /// --selftest-write：在自己的文本框里试「全选替换」和「退格替换」。
+    /// 只有文本框确实在前台才发按键，否则直接放弃，免得打进别人的窗口。
+    /// </summary>
+    static int WriteSelfTest()
+    {
+        Application.EnableVisualStyles();
+        using var form = new Form
+        {
+            Text = "Vibelish write test",
+            StartPosition = FormStartPosition.CenterScreen,
+            ClientSize = new Size(360, 120),
+            TopMost = true,
+        };
+        var box = new TextBox { Multiline = true, AcceptsReturn = true, Dock = DockStyle.Fill, Text = "你好世界" };
+        form.Controls.Add(box);
+        form.Show();
+        form.Activate();
+        box.Focus();
+        box.SelectionStart = box.Text.Length;
+
+        void Pump(int ms)
+        {
+            var until = Environment.TickCount64 + ms;
+            while (Environment.TickCount64 < until)
+            {
+                Application.DoEvents();
+                Thread.Sleep(10);
+            }
+        }
+
+        Pump(300);
+        if (GetForegroundWindow() != form.Handle)
+        {
+            Console.WriteLine("NOT_FOREGROUND（测试窗口没到前台，没发任何按键）");
+            return 4;
+        }
+
+        KeyboardWriter.Replace("Hello world\n第二行", KeyboardWriter.Erase.SelectAll, 0, paste: false);
+        Pump(500);
+        var first = box.Text.Replace("\r\n", "\n");
+        if (first != "Hello world\n第二行")
+        {
+            Console.WriteLine("FAIL selectall [" + first + "]");
+            return 1;
+        }
+
+        if (GetForegroundWindow() != form.Handle)
+        {
+            Console.WriteLine("NOT_FOREGROUND（中途失去前台）");
+            return 4;
+        }
+
+        KeyboardWriter.Replace("OK", KeyboardWriter.Erase.Backspace, 3, paste: false);
+        Pump(500);
+        var second = box.Text.Replace("\r\n", "\n");
+        if (second != "Hello world\nOK")
+        {
+            Console.WriteLine("FAIL backspace [" + second + "]");
+            return 1;
+        }
+
+        Console.WriteLine("ok");
+        return 0;
+    }
+
     /// <summary>--selftest-hook 的目标窗口：一个文本框，15 秒后自己关掉。</summary>
     static int HookTarget()
     {
@@ -385,11 +451,11 @@ static class Program
             CaptureLater(card, shot);
         card.CloseRequested += (_, _) => Application.ExitThread();
         var listen = config.ArrowLabel(false) + " · " + config.LevelLabel;
-        var hint = "请开始输入" + config.Native.Name + "或" + config.Target.Name + "…  Esc 取消";
+        var hint = "请开始输入" + config.Native.Name + "或" + config.Target.Name + "…  Esc 完成";
         switch (what)
         {
             case "idle":
-                card.ShowIdle("Vibelish", "按 Ctrl+Alt+T 开始，输入" + config.Native.Name + "或" + config.Target.Name + "，按 Enter 完成", OverlayForm.CardPlace.TopCenter);
+                card.ShowIdle("Vibelish", "按 Ctrl+Alt+T 开始，输入" + config.Native.Name + "或" + config.Target.Name + "，按 Esc 完成；Ctrl+Shift+Enter 换成译文", OverlayForm.CardPlace.TopCenter);
                 break;
             case "ja":
                 // 中译日：译文、重点词用日文字体。
@@ -600,7 +666,7 @@ static class Program
         if (args.Length >= 1 && args[0] == "--selftest-terminal")
         {
             _ = AttachConsole(AttachParentProcess);
-            var failure = TerminalReader.SelfTest();
+            var failure = TerminalReader.SelfTest() ?? RemoteDiff.SelfTest();
             Console.WriteLine(failure == null ? "ok" : "FAIL " + failure);
             return failure == null ? 0 : 1;
         }
@@ -627,6 +693,12 @@ static class Program
         if (args.Length >= 1 && args[0] == "--hook-target")
             return HookTarget();
 
+        if (args.Length >= 1 && args[0] == "--selftest-write")
+        {
+            _ = AttachConsole(AttachParentProcess);
+            return WriteSelfTest();
+        }
+
         if (args.Length >= 1 && args[0] == "--selftest-hook")
         {
             _ = AttachConsole(AttachParentProcess);
@@ -649,6 +721,27 @@ static class Program
             var probePath = Path.Combine(Path.GetTempPath(), "vibelish-focus.txt");
             FocusProbe.Dump(probePath);
             Console.WriteLine("WROTE " + probePath);
+            return 0;
+        }
+
+        if (args.Length >= 5 && args[0] == "--ocr-screen")
+        {
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            var area = new Rectangle(int.Parse(args[1]), int.Parse(args[2]), int.Parse(args[3]), int.Parse(args[4]));
+            var lines = OcrReader.ReadScreenAsync(area).GetAwaiter().GetResult();
+            _ = AttachConsole(AttachParentProcess);
+            Console.WriteLine("text=" + TrayApplicationContext.JoinLines(lines));
+            return 0;
+        }
+
+        if (args.Length >= 2 && args[0] == "--ocr-hwnd")
+        {
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            var lines = OcrReader.ReadWindowAsync(new IntPtr(long.Parse(args[1]))).GetAwaiter().GetResult();
+            _ = AttachConsole(AttachParentProcess);
+            foreach (var line in lines)
+                Console.WriteLine(line.Box + " " + line.Text);
+            Console.WriteLine("lines=" + lines.Count);
             return 0;
         }
 

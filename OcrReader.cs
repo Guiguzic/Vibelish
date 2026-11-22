@@ -139,6 +139,105 @@ static class OcrReader
         return crop;
     }
 
+    /// <summary>一行识别结果：文字和它在图里的位置（像素）。</summary>
+    public readonly record struct OcrLine(string Text, Rectangle Box);
+
+    /// <summary>整窗截图（PrintWindow，不受上面盖着的窗口影响）后识别，坐标相对窗口左上角。</summary>
+    public static async Task<List<OcrLine>> ReadWindowAsync(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect))
+            return [];
+        var width = rect.Right - rect.Left;
+        var height = rect.Bottom - rect.Top;
+        if (width < 40 || height < 24 || width > 8000 || height > 8000)
+            return [];
+        using var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            var hdc = graphics.GetHdc();
+            try
+            {
+                if (!PrintWindow(hwnd, hdc, 2))
+                    PrintWindow(hwnd, hdc, 0);
+            }
+            finally
+            {
+                graphics.ReleaseHdc(hdc);
+            }
+        }
+
+        return await RecognizeLinesAsync(bitmap);
+    }
+
+    /// <summary>截屏幕上的一块（物理像素）后识别，坐标相对这块的左上角。</summary>
+    public static async Task<List<OcrLine>> ReadScreenAsync(Rectangle area)
+    {
+        if (area.Width < 8 || area.Height < 8)
+            return [];
+        using var bitmap = new Bitmap(area.Width, area.Height, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(bitmap))
+            graphics.CopyFromScreen(area.Location, Point.Empty, area.Size, CopyPixelOperation.SourceCopy);
+        // 字太小时放大一倍再认，Windows OCR 对 12px 以下的字很差。
+        if (area.Height < 60)
+        {
+            using var big = new Bitmap(bitmap, bitmap.Width * 2, bitmap.Height * 2);
+            var lines = await RecognizeLinesAsync(big);
+            return lines.Select(l => new OcrLine(l.Text, new Rectangle(l.Box.X / 2, l.Box.Y / 2, l.Box.Width / 2, l.Box.Height / 2))).ToList();
+        }
+
+        return await RecognizeLinesAsync(bitmap);
+    }
+
+    static async Task<List<OcrLine>> RecognizeLinesAsync(Bitmap bitmap)
+    {
+        var engine = Engine();
+        var lines = new List<OcrLine>();
+        if (engine == null)
+            return lines;
+        using var software = ToSoftwareBitmap(bitmap);
+        var result = await engine.RecognizeAsync(software);
+        foreach (var line in result.Lines)
+        {
+            if (line.Words.Count == 0)
+                continue;
+            double left = double.MaxValue, top = double.MaxValue, right = 0, bottom = 0;
+            foreach (var word in line.Words)
+            {
+                var r = word.BoundingRect;
+                left = Math.Min(left, r.X);
+                top = Math.Min(top, r.Y);
+                right = Math.Max(right, r.X + r.Width);
+                bottom = Math.Max(bottom, r.Y + r.Height);
+            }
+
+            var text = JoinWords(line.Words.Select(w => w.Text));
+            if (text.Length > 0)
+                lines.Add(new OcrLine(text, Rectangle.FromLTRB((int)left, (int)top, (int)Math.Ceiling(right), (int)Math.Ceiling(bottom))));
+        }
+
+        return lines;
+    }
+
+    /// <summary>中文 OCR 会把每个字当一个词、中间加空格；两边都是中日韩字符时去掉空格，英文单词之间保留。</summary>
+    internal static string JoinWords(IEnumerable<string> words)
+    {
+        var sb = new StringBuilder();
+        foreach (var raw in words)
+        {
+            var word = raw.Trim();
+            if (word.Length == 0)
+                continue;
+            if (sb.Length > 0 && !(IsWide(sb[^1]) || IsWide(word[0])))
+                sb.Append(' ');
+            sb.Append(word);
+        }
+
+        return sb.ToString();
+    }
+
+    static bool IsWide(char ch) =>
+        ch is >= '⺀' and <= '鿿' or >= '豈' and <= '﫿' or >= '＀' and <= '￯' or >= '　' and <= '〿';
+
     [DllImport("user32.dll")]
     static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
 

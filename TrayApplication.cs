@@ -34,9 +34,19 @@ sealed class TrayApplicationContext : ApplicationContext
     readonly ToolStripMenuItem _notebookItem;
     NotebookForm? _notebookForm;
 
-    // 学习记录只记按 Enter 完成的那句：完成时译文已经回来就直接记，还在翻就等它回来再记。
+    // 学习记录只记写完的那句（回车发出去、Esc 完成、Ctrl+Shift+回车写入）：译文已经回来就直接记，还在翻就等它回来再记。
     (string Sentence, TranslateResult? Result) _lastResult = ("", null);
     string _recordAfter = "";
+
+    // 回车发出去以后输入框清空了：卡片留着这句的译文，直到开始打下一句。
+    bool _held;
+    // Ctrl+Shift+回车时还没翻好：翻好了马上写进去。
+    string _writeAfter = "";
+    // 刚写进输入框的译文：读回来就是它，不再当新的一句去翻。
+    string _written = "";
+    readonly MouseGesture _gesture;
+    DragFrame? _dragFrame;
+    CancellationTokenSource? _reading;
     bool _capturing;
     int _notes;
     long _nextFieldRead;
@@ -81,6 +91,7 @@ sealed class TrayApplicationContext : ApplicationContext
         _ime.Install();
         _watcher = new FieldWatcher(Environment.ProcessId);
         _hotkey = new GlobalHotkey(Dispatch);
+        _gesture = new MouseGesture(Dispatch);
         (_appIcon, _listeningIcon) = LoadIcons();
         _showThread = new Thread(ShowLoop) { IsBackground = true, Name = "Vibelish.ShowEvent" };
         _showThread.Start();
@@ -150,6 +161,15 @@ sealed class TrayApplicationContext : ApplicationContext
 
         _hotkey.ToggleRequested += ToggleSession;
         _hotkey.EndRequested += EndSession;
+        _hotkey.SubmitSeen += OnSubmitSeen;
+        _hotkey.WriteRequested += WriteIntoField;
+        _gesture.Dragging += area =>
+        {
+            _dragFrame ??= new DragFrame();
+            _dragFrame.ShowArea(area);
+        };
+        _gesture.Finished += area => _ = ReadAreaAsync(area);
+        _gesture.SetEnabled(_config.DragTranslate);
         RegisterHotkey(announce: false);
 
         _timer.Tick += (_, _) => Poll();
@@ -254,7 +274,7 @@ sealed class TrayApplicationContext : ApplicationContext
     };
 
     string IdleHint() => (_hotkey.HotkeyRegistered
-        ? "按 " + _hotkey.HotkeyText + " 开始，输入" + InputLanguage + "，按 Enter 完成"
+        ? "按 " + _hotkey.HotkeyText + " 开始，输入" + InputLanguage + "，按 Esc 完成；Ctrl+Shift+Enter 换成译文"
         : _config.Enabled
             ? "热键被占用，请右键托盘图标选「开始翻译」，或在设置里换一个热键"
             : "热键已关闭，请右键托盘图标选「开始翻译」") + LearningLine();
@@ -325,7 +345,8 @@ sealed class TrayApplicationContext : ApplicationContext
 
         var now = Environment.TickCount64;
         var field = ReadField();
-        var imeText = committed + (composition.Any(char.IsLetter) ? composition : "");
+        // 远程窗口（Docker / WSL）里的中文是 Linux 那边的输入法打的，本机钩子只收到拼音字母，不能用。
+        var imeText = _watcher.Latest is { Remote: true } ? "" : committed + (composition.Any(char.IsLetter) ? composition : "");
         var shown = TerminalReader.RedactSecrets(_config.Readable(field) ? field : imeText);
         if (_baselineOpen)
         {
@@ -342,6 +363,19 @@ sealed class TrayApplicationContext : ApplicationContext
 
         if (_baseline.Length > 0 && string.Equals(shown, _baseline, StringComparison.Ordinal) && _config.ToNative(shown))
             shown = "";
+
+        // 刚写进去的译文读回来了，不是新打的字。
+        if (_written.Length > 0 && SameText(shown, _written))
+            return;
+
+        // 回车发出去以后：输入框空着就一直留着上一句，开始打下一句再换。
+        if (_held)
+        {
+            if (shown.Length == 0 || string.Equals(shown, _sentence, StringComparison.Ordinal))
+                return;
+            _held = false;
+            _written = "";
+        }
 
         // 输入框偶尔读空一下，别马上把卡片清掉。
         if (shown.Length == 0 && _sentence.Length > 0 && now - _fieldSeen < 2000)
@@ -430,6 +464,9 @@ sealed class TrayApplicationContext : ApplicationContext
         _notes = 0;
         _lastResult = ("", null);
         _recordAfter = "";
+        _held = false;
+        _writeAfter = "";
+        _written = "";
         _translatedFor = "";
         _doneChinese = "";
         _failedFor = "";
@@ -449,13 +486,13 @@ sealed class TrayApplicationContext : ApplicationContext
         _baselineOpen = true;
         _idleTimer.Stop();
         _hideTimer.Stop();
-        _overlay.BeginListening(Badge(null), "请开始输入" + InputLanguage + "…  Esc 取消");
+        _overlay.BeginListening(Badge(null), "请开始输入" + InputLanguage + "…  Esc 完成");
         UpdateTrayState();
         // 趁用户还在打字，先把到翻译服务的连接建好，第一句就不用等握手。
         _translator.WarmUp();
     }
 
-    /// <summary>按 Enter 完成以后，过几秒自动收起卡片（设置里可关）。</summary>
+    /// <summary>按 Esc 完成以后，过几秒自动收起卡片（设置里可关）。</summary>
     void ScheduleAutoHide()
     {
         _hideTimer.Stop();
@@ -465,7 +502,7 @@ sealed class TrayApplicationContext : ApplicationContext
         _hideTimer.Start();
     }
 
-    /// <param name="cancel">Esc / 关闭按钮：丢掉本次，隐藏卡片。回车：把这句翻完，卡片留着方便复制。</param>
+    /// <param name="cancel">关闭按钮：丢掉本次，隐藏卡片。Esc：把这句翻完，卡片留着方便复制。</param>
     void EndSession(bool cancel)
     {
         if (!_capturing)
@@ -490,18 +527,8 @@ sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        // 以前回车会取消还没出来的翻译，打完字马上回车就什么都拿不到。
-        var inFlight = _translating && string.Equals(_translatedFor, _sentence, StringComparison.Ordinal);
-        if (!inFlight && ShouldTranslate(_sentence) && !string.Equals(_sentence, _doneChinese, StringComparison.Ordinal))
-        {
-            _failedFor = "";
-            _ = TranslateAsync(_sentence);
-        }
+        CompleteSentence();
 
-        if (_lastResult.Result is { } last && !inFlight && string.Equals(_lastResult.Sentence, _sentence, StringComparison.Ordinal))
-            Record(_sentence, last);
-        else
-            _recordAfter = _sentence;
 
         if (!_translating && !ShouldTranslate(_sentence) && _overlay.ResultText.Length == 0)
         {
@@ -511,6 +538,169 @@ sealed class TrayApplicationContext : ApplicationContext
 
         _overlay.FinishSession();
         ScheduleAutoHide();
+    }
+
+    /// <summary>这句写完了：还没翻就翻完它（以前回车会取消还没出来的翻译，打完字马上回车就什么都拿不到），翻好了就记进学习记录。</summary>
+    void CompleteSentence()
+    {
+        var inFlight = _translating && string.Equals(_translatedFor, _sentence, StringComparison.Ordinal);
+        if (!inFlight && ShouldTranslate(_sentence) && !string.Equals(_sentence, _doneChinese, StringComparison.Ordinal))
+        {
+            _failedFor = "";
+            _ = TranslateAsync(_sentence);
+            inFlight = true;
+        }
+
+        if (_lastResult.Result is { } last && !inFlight && string.Equals(_lastResult.Sentence, _sentence, StringComparison.Ordinal))
+            Record(_sentence, last);
+        else
+            _recordAfter = _sentence;
+    }
+
+    /// <summary>回车照常发出去了（终端执行、聊天发送）。听写不停，这句算写完；输入框清空后卡片留着它。</summary>
+    void OnSubmitSeen()
+    {
+        if (!_capturing || !ShouldTranslate(_sentence))
+            return;
+        CompleteSentence();
+        _held = true;
+        TraceLog.Note("submit len=" + _sentence.Length);
+    }
+
+    /// <summary>Ctrl+Shift+回车：把译文写进输入框、替换原文。还没翻好就等翻好再写。</summary>
+    void WriteIntoField()
+    {
+        if (!_capturing)
+            return;
+        var sentence = _sentence;
+        if (!ShouldTranslate(sentence))
+        {
+            _overlay.SetStatus("输入框里还没有要翻译的内容", OverlayForm.StatusKind.Info);
+            return;
+        }
+
+        var ready = !_translating && _lastResult.Result != null
+            && string.Equals(_lastResult.Sentence, sentence, StringComparison.Ordinal);
+        if (ready)
+        {
+            WriteNow(sentence);
+            return;
+        }
+
+        _writeAfter = sentence;
+        if (!(_translating && string.Equals(_translatedFor, sentence, StringComparison.Ordinal)))
+        {
+            _failedFor = "";
+            _ = TranslateAsync(sentence);
+        }
+
+        _overlay.SetStatus("翻好就写进输入框…", OverlayForm.StatusKind.Info);
+    }
+
+    void WriteNow(string sentence)
+    {
+        _writeAfter = "";
+        var text = _overlay.WriteText.Trim();
+        if (text.Length == 0)
+        {
+            _overlay.SetStatus(_overlay.ToNative ? "这句已经很地道，不用替换" : "没有可以写入的译文", OverlayForm.StatusKind.Info);
+            return;
+        }
+
+        if (_lastResult.Result is { } last && string.Equals(_lastResult.Sentence, sentence, StringComparison.Ordinal))
+            Record(sentence, last);
+
+        var field = FreshField();
+        bool ok;
+        if (field is { Ok: true, CanWrite: true, WholeField: true } && FocusReader.TryWrite(field, text, _config.Target.Name, out _))
+            ok = true;
+        else if (field is { Ok: true, Terminal: true })
+            ok = KeyboardWriter.Replace(text, KeyboardWriter.Erase.Backspace, new System.Globalization.StringInfo(sentence).LengthInTextElements, paste: false);
+        else if (field is { Ok: true, Remote: true })
+            ok = CopyToClipboard(text) && KeyboardWriter.Replace(text, KeyboardWriter.Erase.SelectAll, 0, paste: true);
+        else if (field is { Ok: true } && (field.WholeField || field.NeedsOcr))
+            ok = KeyboardWriter.Replace(text, KeyboardWriter.Erase.SelectAll, 0, paste: false);
+        else
+        {
+            // 不确定输入框边界（比如 Word 这种整篇文档）：不敢全选替换，只复制。
+            var copied = CopyToClipboard(text);
+            _overlay.SetStatus(copied ? "这里不能安全地替换，已复制" + _config.Target.Name + "，请按 Ctrl+V" : "写入失败，复制也失败了",
+                copied ? OverlayForm.StatusKind.Info : OverlayForm.StatusKind.Error);
+            return;
+        }
+
+        _written = text;
+        _held = true;
+        TraceLog.Note("write ok=" + ok + " terminal=" + (field?.Terminal ?? false) + " remote=" + (field?.Remote ?? false));
+        _overlay.SetStatus(ok ? "已写入输入框" : "写入失败，请再按一次 Ctrl+Shift+Enter",
+            ok ? OverlayForm.StatusKind.Success : OverlayForm.StatusKind.Error);
+    }
+
+    static bool SameText(string a, string b)
+    {
+        static string Squash(string text) => new(text.Where(ch => !char.IsWhiteSpace(ch)).ToArray());
+        return a.Length > 0 && string.Equals(Squash(a), Squash(b), StringComparison.Ordinal);
+    }
+
+    /// <summary>右键拖过的地方：截图识别，翻译后显示在卡片上。只翻译，不纠错，也不记进学习记录。</summary>
+    async Task ReadAreaAsync(Rectangle area)
+    {
+        _dragFrame?.Hide();
+        if (_capturing)
+            EndSession(cancel: false);
+        _reading?.Cancel();
+        var cts = new CancellationTokenSource();
+        _reading = cts;
+        try
+        {
+            // 等选框真的消失再截图。
+            await Task.Delay(60, cts.Token);
+            var lines = await OcrReader.ReadScreenAsync(area);
+            if (cts.IsCancellationRequested)
+                return;
+            var text = JoinLines(lines);
+            TraceLog.Note("drag ocr lines=" + lines.Count + " len=" + text.Length);
+            CancelTranslation();
+            CancelWordWork();
+            _hideTimer.Stop();
+            _overlay.BeginListening(Badge(null), "右键拖过的文字");
+            if (text.Length == 0)
+            {
+                _overlay.FinishSession();
+                _overlay.SetStatus("没认出文字，框大一点、慢一点再拖一次", OverlayForm.StatusKind.Error);
+                ScheduleAutoHide();
+                return;
+            }
+
+            _overlay.UpdateSource(text, area, _config.ToNative(text));
+            _overlay.FinishSession();
+            await TranslateAsync(text, reading: true);
+            ScheduleAutoHide();
+        }
+        catch (OperationCanceledException)
+        {
+            // 又拖了一次。
+        }
+        catch (Exception ex)
+        {
+            TraceLog.Note("drag ocr error " + TraceLog.Safe(ex.Message));
+        }
+    }
+
+    internal static string JoinLines(IReadOnlyList<OcrReader.OcrLine> lines)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var line in lines.OrderBy(l => l.Box.Y))
+        {
+            var text = line.Text.Trim();
+            if (text.Length == 0)
+                continue;
+            if (sb.Length > 0 && !(sb[^1] >= '⺀' && text[0] >= '⺀'))
+                sb.Append(' ');
+            sb.Append(text);
+        }
+
+        return sb.ToString().Trim();
     }
 
     /// <summary>卡片标题后面的小字：翻译方向 · 难度（没用大模型时是引擎名）。还不知道方向时传 null。</summary>
@@ -558,7 +748,8 @@ sealed class TrayApplicationContext : ApplicationContext
         _study?.Cancel();
     }
 
-    async Task TranslateAsync(string sentence)
+    /// <param name="reading">右键划出来的别人的字：只翻译，不纠错，不自动写入。</param>
+    async Task TranslateAsync(string sentence, bool reading = false)
     {
         CancelTranslation();
         CancelWordWork();
@@ -584,7 +775,7 @@ sealed class TrayApplicationContext : ApplicationContext
 
         try
         {
-            var result = await _translator.TranslateAsync(sentence, token, partial);
+            var result = await _translator.TranslateAsync(sentence, token, partial, reading);
             if (token.IsCancellationRequested || generation != _translateGeneration)
                 return;
             if (!result.Ok)
@@ -606,9 +797,12 @@ sealed class TrayApplicationContext : ApplicationContext
             _overlay.ShowTranslation(sentence, result.Text, result.Detail, result.ToNative, result.Better, result.Coach);
             AddRecent(sentence, result.Text, result.ToNative, result.Better, result.Coach);
             _lastResult = (sentence, result);
-            if (!_capturing && string.Equals(sentence, _recordAfter, StringComparison.Ordinal))
+            if (!reading && string.Equals(sentence, _recordAfter, StringComparison.Ordinal))
                 Record(sentence, result);
-            ApplyTranslation(result.ToNative);
+            if (!reading)
+                ApplyTranslation(result.ToNative);
+            if (!reading && _capturing && string.Equals(sentence, _writeAfter, StringComparison.Ordinal))
+                WriteNow(sentence);
             if (result.Words is { Count: > 0 } words)
                 _overlay.ShowStudy(words); // 和译文同一次请求带回来的，不用再等。
             else if (_config.StudyWords && _config.HasChatApi)
@@ -887,7 +1081,7 @@ sealed class TrayApplicationContext : ApplicationContext
             _recent.RemoveRange(RecentLimit, _recent.Count - RecentLimit);
     }
 
-    /// <summary>按 Enter 完成的那句记进学习记录：只记大模型翻的（有纠错或点拨），关了「记到学习记录」就不记。</summary>
+    /// <summary>写完的那句记进学习记录：只记大模型翻的（有纠错或点拨），关了「记到学习记录」就不记。</summary>
     void Record(string sentence, TranslateResult result)
     {
         _recordAfter = "";
@@ -1070,6 +1264,7 @@ sealed class TrayApplicationContext : ApplicationContext
         var hotkeyChanged = !string.Equals(next.Hotkey, _config.Hotkey, StringComparison.OrdinalIgnoreCase) || next.Enabled != _config.Enabled;
         var lookChanged = next.Theme != _config.Theme || next.Accent != _config.Accent || next.CardTextSize != _config.CardTextSize;
         _config = next;
+        _gesture.SetEnabled(_config.DragTranslate);
         if (!_config.TrySave(out var error))
             _icon.ShowBalloonTip(5000, "Vibelish", "设置没能保存：" + error, ToolTipIcon.Warning);
         _translator.UpdateConfig(_config);
@@ -1161,7 +1356,7 @@ sealed class TrayApplicationContext : ApplicationContext
     {
         _icon.Icon = _capturing ? _listeningIcon : _appIcon;
         _icon.Text = _capturing
-            ? "Vibelish · 正在听写（Enter 完成，Esc 取消）"
+            ? "Vibelish · 正在听写（Esc 完成，Ctrl+Shift+Enter 写入）"
             : !_config.Enabled
                 ? "Vibelish · 热键已关闭"
                 : _hotkey.HotkeyRegistered
@@ -1191,6 +1386,8 @@ sealed class TrayApplicationContext : ApplicationContext
         Speech.Dispose();
         _settings?.Close();
         _hotkey.Dispose();
+        _gesture.Dispose();
+        _dragFrame?.Dispose();
         _watcher.Dispose();
         _ime.Dispose();
         _icon.Visible = false;

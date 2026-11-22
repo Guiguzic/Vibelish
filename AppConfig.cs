@@ -47,8 +47,11 @@ sealed class AppConfig
     /// <summary>纠错与点拨（需要大模型接口）：自己写外语时逐处指出错误和背后的母语思维；写母语时说一句译文的写法。</summary>
     public bool Coaching { get; set; } = true;
 
-    /// <summary>按 Enter 完成的句子记进学习记录（错题本、中译英），可以复习、让大模型总结。</summary>
+    /// <summary>写完的句子（回车发出去，或按 Esc 完成）记进学习记录（错题本、中译英），可以复习、让大模型总结。</summary>
     public bool KeepNotebook { get; set; } = true;
+
+    /// <summary>按住鼠标右键拖过屏幕上的字：识别出来翻译。</summary>
+    public bool DragTranslate { get; set; } = true;
 
     /// <summary>在学的语言写到多难：kaoyan（考研 / 高级）、cet6（六级 / 中级）、plain（日常）。名字是历史原因。</summary>
     public string EnglishLevel { get; set; } = "kaoyan";
@@ -74,7 +77,7 @@ sealed class AppConfig
     /// <summary>卡片上显示中文原文。</summary>
     public bool ShowSource { get; set; } = true;
 
-    /// <summary>卡片上显示操作提示（Enter 完成 · Esc 取消 等）。</summary>
+    /// <summary>卡片上显示操作提示（Esc 完成 · Ctrl+Shift+Enter 换成译文 等）。</summary>
     public bool ShowHints { get; set; } = true;
 
     /// <summary>卡片上显示译文来源（模型名、引擎）。</summary>
@@ -98,7 +101,7 @@ sealed class AppConfig
     /// <summary>卡片位置：input（跟着输入框）、top（屏幕顶部）、bottom（屏幕底部）。</summary>
     public string CardPosition { get; set; } = "input";
 
-    /// <summary>按 Enter 完成后几秒自动收起卡片，0 表示不收起。</summary>
+    /// <summary>按 Esc 完成后几秒自动收起卡片，0 表示不收起。</summary>
     public int AutoHideSeconds { get; set; }
 
     public static string Directory =>

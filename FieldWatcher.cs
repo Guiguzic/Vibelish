@@ -13,6 +13,9 @@ sealed class FieldWatcher : IDisposable
     string _ocrText = "";
     long _ocrAt;
     long _nextOcr;
+    // 远程窗口开始听写时原有的行，按窗口分开记；换回来接着比。
+    readonly Dictionary<IntPtr, List<OcrReader.OcrLine>> _remoteBaseline = new();
+    volatile bool _resetRemote;
 
     public FieldWatcher(int selfPid)
     {
@@ -35,7 +38,11 @@ sealed class FieldWatcher : IDisposable
     {
         _on = enabled;
         if (enabled)
+        {
+            _resetRemote = true;
             return;
+        }
+
         Volatile.Write(ref _latest, null);
         Volatile.Write(ref _ocrText, "");
     }
@@ -51,7 +58,9 @@ sealed class FieldWatcher : IDisposable
                     var snapshot = FocusReader.Read(_selfPid);
                     Volatile.Write(ref _latest, snapshot);
                     Interlocked.Exchange(ref _latestAt, Environment.TickCount64);
-                    if (snapshot.Ok && snapshot.NeedsOcr && OcrReader.CanCapture(snapshot.Bounds))
+                    if (snapshot.Ok && snapshot.Remote)
+                        TryOcrRemote(snapshot);
+                    else if (snapshot.Ok && snapshot.NeedsOcr && OcrReader.CanCapture(snapshot.Bounds))
                         TryOcr(snapshot);
                 }
                 catch (Exception ex)
@@ -80,6 +89,40 @@ sealed class FieldWatcher : IDisposable
         catch
         {
             // OCR is best effort; UIA/IME remain the primary sources.
+        }
+    }
+
+    void TryOcrRemote(FocusSnapshot snapshot)
+    {
+        if (_resetRemote)
+        {
+            _resetRemote = false;
+            _remoteBaseline.Clear();
+            _nextOcr = 0;
+        }
+
+        var now = Environment.TickCount64;
+        if (now < _nextOcr)
+            return;
+        _nextOcr = now + 500;
+        try
+        {
+            var lines = OcrReader.ReadWindowAsync(snapshot.Hwnd).GetAwaiter().GetResult();
+            if (!_remoteBaseline.TryGetValue(snapshot.Hwnd, out var baseline))
+            {
+                _remoteBaseline[snapshot.Hwnd] = lines;
+                Volatile.Write(ref _ocrText, "");
+            }
+            else
+            {
+                Volatile.Write(ref _ocrText, RemoteDiff.Pick(baseline, lines));
+            }
+
+            Interlocked.Exchange(ref _ocrAt, Environment.TickCount64);
+        }
+        catch
+        {
+            // 截图或识别失败就等下一轮。
         }
     }
 

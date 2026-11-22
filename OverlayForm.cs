@@ -786,10 +786,10 @@ sealed class OverlayForm : Form
         if (_state == CardState.Listening)
         {
             if (SourceText.Length == 0)
-                return "Esc 取消";
+                return "Esc 完成";
             return hasEnglish && CanLookup && !_glossOpen
-                ? "点词查义 · Enter 完成 · Esc 取消"
-                : "Enter 完成 · Shift+Enter 换行 · Esc 取消";
+                ? "点词查义 · Ctrl+Shift+Enter 换成译文 · Esc 完成"
+                : "Ctrl+Shift+Enter 换成译文 · Esc 完成";
         }
 
         if (_state == CardState.Done && hasEnglish && CanLookup && !_glossOpen)

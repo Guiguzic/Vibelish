@@ -243,7 +243,7 @@ sealed class NotebookForm : Form
         var mistakes = page.AddGroup("最常犯的错误（最近 30 天）");
         if (top.Count == 0)
         {
-            mistakes.AddRow("还没有数据", "用" + config.Target.Name + "写几句、按 Enter 完成，这里会按类型统计你的错误（需要大模型接口）", null);
+            mistakes.AddRow("还没有数据", "用" + config.Target.Name + "写几句（回车发出去或按 Esc 完成），这里会按类型统计你的错误（需要大模型接口）", null);
         }
         else
         {
@@ -259,7 +259,7 @@ sealed class NotebookForm : Form
         ai.AddRow("", "", _reportLabel).Stacked = true;
         _diagnoseRow = ai.AddRow(_notebook.Report.Length > 0 ? "重新分析" : "分析我的问题", DiagnoseSubtitle(config), _diagnoseButton);
         _diagnoseButton.Enabled = _diagnosing == null;
-        page.AddNote("只记按 Enter 完成、并且用大模型翻译的句子。记录只存在这台电脑的 " + Notebook.DefaultPath + "。");
+        page.AddNote("只记写完（回车发出去或按 Esc 完成）、并且用大模型翻译的句子。记录只存在这台电脑的 " + Notebook.DefaultPath + "。");
     }
 
     string DiagnoseSubtitle(AppConfig config)
@@ -333,7 +333,7 @@ sealed class NotebookForm : Form
         if (entries.Count == 0)
         {
             var empty = page.AddGroup("");
-            empty.AddRow("还没有错题", "直接用" + _config().Target.Name + "写、按 Enter 完成。写错的地方会记在这里：写错的 → 改正的，为什么错，背后的母语思维。", null);
+            empty.AddRow("还没有错题", "直接用" + _config().Target.Name + "写，回车发出去或按 Esc 完成。写错的地方会记在这里：写错的 → 改正的，为什么错，背后的母语思维。", null);
             return;
         }
 
@@ -367,7 +367,7 @@ sealed class NotebookForm : Form
         if (entries.Count == 0)
         {
             var empty = page.AddGroup("");
-            empty.AddRow("还没有记录", "写中文、按 Enter 完成，原文和大模型的译文会记在这里，复习时先看中文、自己想英文怎么说。", null);
+            empty.AddRow("还没有记录", "写中文，回车发出去或按 Esc 完成，原文和大模型的译文会记在这里，复习时先看中文、自己想英文怎么说。", null);
             return;
         }
 
@@ -668,7 +668,7 @@ sealed class ReviewCard : ThemedControl, IFlowControl
             _ask.Text = _done > 0 ? "这一轮复习完了，做了 " + _done + " 条。" : "";
             _prompt.Text = _done > 0 && _again.Visible ? "还有到点的，可以再来一轮。"
                 : _notebook.Entries.Any(item => item.Reviewable) ? "现在没有要复习的，明天再来。"
-                : "还没有可以复习的。用" + config.Target.Name + "写（写错的会进错题本），或者写中文让它翻（会进中译英），按 Enter 完成就会记下来。";
+                : "还没有可以复习的。用" + config.Target.Name + "写（写错的会进错题本），或者写中文让它翻（会进中译英），回车发出去或按 Esc 完成就会记下来。";
             _prompt.Font = Theme.Ui(10.5F);
             _prompt.ForeColor = P.Body;
             return;

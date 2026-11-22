@@ -129,7 +129,7 @@ sealed class Notebook
         return notebook;
     }
 
-    /// <summary>按 Enter 完成的一句。同一句话（比如改了一个字又完成一次）只留最新的。</summary>
+    /// <summary>写完的一句（回车发出去或 Esc 完成）。同一句话（比如改了一个字又完成一次）只留最新的。</summary>
     public NoteEntry? Add(string source, TranslateResult result, AppConfig config)
     {
         source = source.Trim();

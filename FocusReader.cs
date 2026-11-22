@@ -20,6 +20,13 @@ sealed class FocusSnapshot
     public int Key { get; init; }
     public AutomationElement? Element { get; init; }
 
+    /// <summary>远程窗口（WSLg / Docker 里的 Linux 程序、远程桌面）：看不到控件，只能整窗 OCR。</summary>
+    public bool Remote { get; init; }
+    public IntPtr Hwnd { get; init; }
+
+    /// <summary>终端：读到的是光标所在的输入行，只能用按键改。</summary>
+    public bool Terminal { get; init; }
+
     public static FocusSnapshot Fail(string reason) => new() { Ok = false, Reason = reason };
 
     public FocusSnapshot WithParagraph(string paragraph)
@@ -38,6 +45,9 @@ sealed class FocusSnapshot
             Bounds = Bounds,
             Key = Key,
             Element = Element,
+            Remote = Remote,
+            Hwnd = Hwnd,
+            Terminal = Terminal,
         };
     }
 }
@@ -152,6 +162,9 @@ static class FocusReader
     {
         try
         {
+            if (RemoteWindow(selfPid) is { } remote)
+                return remote;
+
             var focused = AutomationElement.FocusedElement;
             if (focused == null)
                 return FocusSnapshot.Fail("没有焦点");
@@ -168,7 +181,7 @@ static class FocusReader
 
                 // 终端没有编辑框。必须先于 TryReadText：控制台的“段落”等于整屏缓冲。
                 if (TerminalReader.TryRead(node, out var terminalText, out var terminalBounds))
-                    return Success(node, pid, terminalText, whole: true, canWrite: false, needsOcr: false, terminalBounds);
+                    return Success(node, pid, terminalText, whole: true, canWrite: false, needsOcr: false, terminalBounds, terminal: true);
 
                 if (TryReadText(node, out var paragraph, out var whole, out var canWrite))
                     return Success(node, pid, paragraph, whole, canWrite, needsOcr: false);
@@ -242,7 +255,7 @@ static class FocusReader
         }
     }
 
-    static FocusSnapshot Success(AutomationElement node, int pid, string paragraph, bool whole, bool canWrite, bool needsOcr, Rectangle? bounds = null)
+    static FocusSnapshot Success(AutomationElement node, int pid, string paragraph, bool whole, bool canWrite, bool needsOcr, Rectangle? bounds = null, bool terminal = false)
     {
         var window = RootWindow(node);
         var app = ProcessName(pid);
@@ -261,7 +274,59 @@ static class FocusReader
             Bounds = bounds ?? ToRectangle(node.Current.BoundingRectangle),
             Key = HashCode.Combine(pid, title, control),
             Element = node,
+            Terminal = terminal,
         };
+    }
+
+    /// <summary>
+    /// 前台是 WSLg（Docker、WSL 里的 Linux 程序）或远程桌面的窗口时，里面的输入框 UI Automation 看不到，
+    /// 中文也是 Linux 那边的输入法（fcitx 等）打的，本机输入法钩子收不到字。只能整窗截图识别。
+    /// </summary>
+    static FocusSnapshot? RemoteWindow(int selfPid)
+    {
+        var hwnd = GetForegroundWindow();
+        if (hwnd == IntPtr.Zero)
+            return null;
+        var cls = new StringBuilder(64);
+        _ = Native.GetClassName(hwnd, cls, cls.Capacity);
+        if (!IsRemoteClass(cls.ToString()))
+            return null;
+        _ = Native.GetWindowThreadProcessId(hwnd, out var pid);
+        if (pid == selfPid || !GetWindowRect(hwnd, out var rect))
+            return null;
+        var title = new StringBuilder(256);
+        _ = Native.GetWindowText(hwnd, title, title.Capacity);
+        var bounds = Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
+        return new FocusSnapshot
+        {
+            Ok = true,
+            App = ProcessName((int)pid),
+            Window = title.ToString(),
+            Control = "remote",
+            NeedsOcr = true,
+            Remote = true,
+            Hwnd = hwnd,
+            Bounds = bounds,
+            Key = HashCode.Combine((int)pid, hwnd),
+        };
+    }
+
+    internal static bool IsRemoteClass(string cls) =>
+        cls is "RAIL_WINDOW" or "TscShellContainerClass";
+
+    [DllImport("user32.dll")]
+    static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    static extern bool GetWindowRect(IntPtr hwnd, out WinRect rect);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct WinRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
     }
 
     static bool IsCustomInput(AutomationElement element, out Rectangle bounds)

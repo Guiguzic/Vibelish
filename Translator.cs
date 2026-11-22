@@ -186,16 +186,21 @@ sealed class Translator
         return WordStudy.ParseRewrite(chat.Text);
     }
 
+    // 划词读的是别人写的字，不给它纠错、点拨。跟着 await 流到大模型那一步。
+    static readonly AsyncLocal<bool> Reading = new();
+
     /// <param name="partial">流式输出时，每来一段就回调一次当前能显示的译文（在线程池线程上调用）。</param>
-    public async Task<TranslateResult> TranslateAsync(string text, CancellationToken cancellationToken, Action<string>? partial = null)
+    /// <param name="reading">屏幕上划出来的文字（不是自己写的）：只翻译，不纠错。</param>
+    public async Task<TranslateResult> TranslateAsync(string text, CancellationToken cancellationToken, Action<string>? partial = null, bool reading = false)
     {
+        Reading.Value = reading;
         text = text.Trim();
         if (text.Length == 0)
             return new TranslateResult(false, "", "没有可翻译的文字");
 
         var toNative = _config.ToNative(text);
         var key = _config.Engine + "\n" + _config.EnglishLevel + "\n" + _config.OpenAiBaseUrl + "\n" + _config.OpenAiModel
-            + "\n" + _config.StudyWords + "\n" + _config.Coaching + "\n" + _config.NativeLanguage + "\n" + _config.TargetLanguage + "\n" + toNative + "\n" + text;
+            + "\n" + _config.StudyWords + "\n" + (_config.Coaching && !reading) + "\n" + _config.NativeLanguage + "\n" + _config.TargetLanguage + "\n" + toNative + "\n" + text;
         if (_cache.TryGetValue(key, out var cached))
             return cached;
 
@@ -443,7 +448,7 @@ sealed class Translator
 
         var native = _config.Native;
         var target = _config.Target;
-        var coaching = _config.Coaching;
+        var coaching = _config.Coaching && !Reading.Value;
         var prompt = toNative ? ReversePrompt(level, withWords, coaching, native, target) : TranslationPrompt(level, withWords, coaching, native, target);
         var chat = await ChatAsync(prompt, text, level == "kaoyan" ? 0.3 : 0.2, cancellationToken, onDelta);
         if (!chat.Ok)

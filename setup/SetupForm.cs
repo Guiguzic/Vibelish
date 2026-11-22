@@ -264,7 +264,7 @@ sealed class SetupForm : Form
         var usage = NewCard("怎么用");
         usage.Add(Step(1, "在任意输入框里按 " + hotkey + " 开始。"));
         usage.Add(Step(2, "照常打字：写中文，卡片上出现英文；直接写英文，卡片上出现中文意思。"));
-        usage.Add(Step(3, "按 Enter 完成（Shift+Enter 换行），按 Esc 取消。点译文里的单词可以查词、换说法。"));
+        usage.Add(Step(3, "按 Esc 完成，Ctrl+Shift+Enter 把原文换成译文。按住右键拖过屏幕上的字也能翻译。"));
         usage.Add(Wrapped("右键托盘图标可以打开设置、切换翻译方向；在设置 → 翻译里还能换成日文、法文、西班牙文等别的语言。\n配置大模型接口（DeepSeek、通义千问、Kimi 等）后，译文更地道，写外语时还会给出更地道的说法。", Hint, new Padding(0, 6, 0, 0)));
         stack.Controls.Add(usage);
 
