@@ -22,7 +22,7 @@ sealed class TrayApplicationContext : ApplicationContext
     readonly EventWaitHandle _showEvent = new(false, EventResetMode.AutoReset, @"Local\Vibelish.Show");
     readonly ManualResetEvent _stopping = new(false);
     readonly Thread _showThread;
-    readonly List<(string Source, string Result, bool ToNative, string? Better)> _recent = new();
+    readonly List<(string Source, string Result, bool ToNative, string? Better, Coaching? Coach)> _recent = new();
     readonly ToolStripMenuItem _toggleItem;
     readonly ToolStripMenuItem _recentItem;
     readonly ToolStripMenuItem _directionItem;
@@ -30,6 +30,13 @@ sealed class TrayApplicationContext : ApplicationContext
     readonly ToolStripMenuItem _startupItem;
     AppConfig _config;
     SettingsForm? _settings;
+    readonly Notebook _notebook = Notebook.Load();
+    readonly ToolStripMenuItem _notebookItem;
+    NotebookForm? _notebookForm;
+
+    // 学习记录只记按 Enter 完成的那句：完成时译文已经回来就直接记，还在翻就等它回来再记。
+    (string Sentence, TranslateResult? Result) _lastResult = ("", null);
+    string _recordAfter = "";
     bool _capturing;
     int _notes;
     long _nextFieldRead;
@@ -85,6 +92,7 @@ sealed class TrayApplicationContext : ApplicationContext
             Font = Theme.Ui(9F, FontStyle.Bold),
         };
         _recentItem = new ToolStripMenuItem("最近翻译");
+        _notebookItem = new ToolStripMenuItem("学习记录…", null, (_, _) => BeginOnUi(() => OpenNotebook(review: false)));
         _directionItem = new ToolStripMenuItem("翻译方向");
         // 文字跟着母语和在学的语言变，打开菜单时再填（RefreshMenu）。
         foreach (var key in new[] { "auto", "forward", "reverse" })
@@ -97,6 +105,7 @@ sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(_toggleItem);
         menu.Items.Add(new ToolStripMenuItem("显示卡片", null, (_, _) => BeginOnUi(() => ShowCard(toggle: false))));
         menu.Items.Add(_recentItem);
+        menu.Items.Add(_notebookItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_directionItem);
         menu.Items.Add(new ToolStripMenuItem("设置…", null, (_, _) => BeginOnUi(OpenSettings)));
@@ -244,11 +253,23 @@ sealed class TrayApplicationContext : ApplicationContext
         _ => _config.Native.Name + "或" + _config.Target.Name,
     };
 
-    string IdleHint() => _hotkey.HotkeyRegistered
+    string IdleHint() => (_hotkey.HotkeyRegistered
         ? "按 " + _hotkey.HotkeyText + " 开始，输入" + InputLanguage + "，按 Enter 完成"
         : _config.Enabled
             ? "热键被占用，请右键托盘图标选「开始翻译」，或在设置里换一个热键"
-            : "热键已关闭，请右键托盘图标选「开始翻译」";
+            : "热键已关闭，请右键托盘图标选「开始翻译」") + LearningLine();
+
+    /// <summary>空闲卡片上的第二行：没配大模型时提醒去配；配了就说今天学了多少、有几条该复习。</summary>
+    string LearningLine()
+    {
+        if (!_config.HasChatApi)
+            return "\n现在用的是免费机器翻译，没有考研难度和纠错。设置 → 大模型 → 选 DeepSeek、填 API Key";
+        var stats = _notebook.Stats();
+        if (stats.Written + stats.Translated == 0 && stats.Due == 0)
+            return "";
+        return "\n今天写了 " + stats.Written + " 句" + _config.Target.Name + "、纠正 " + stats.Fixed + " 处"
+            + (stats.Due > 0 ? " · 待复习 " + stats.Due + " 条（托盘菜单 → 学习记录）" : "");
+    }
 
     void ShowIdle(bool pinTop)
     {
@@ -407,6 +428,8 @@ sealed class TrayApplicationContext : ApplicationContext
         _hotkey.BeginCapture();
         _sentence = "";
         _notes = 0;
+        _lastResult = ("", null);
+        _recordAfter = "";
         _translatedFor = "";
         _doneChinese = "";
         _failedFor = "";
@@ -474,6 +497,11 @@ sealed class TrayApplicationContext : ApplicationContext
             _failedFor = "";
             _ = TranslateAsync(_sentence);
         }
+
+        if (_lastResult.Result is { } last && !inFlight && string.Equals(_lastResult.Sentence, _sentence, StringComparison.Ordinal))
+            Record(_sentence, last);
+        else
+            _recordAfter = _sentence;
 
         if (!_translating && !ShouldTranslate(_sentence) && _overlay.ResultText.Length == 0)
         {
@@ -575,8 +603,11 @@ sealed class TrayApplicationContext : ApplicationContext
             _doneChinese = sentence;
             TraceLog.Note("translate ok " + TraceLog.Safe(result.Detail) + " chars=" + result.Text.Length
                 + " first=" + result.FirstMs + "ms total=" + result.TotalMs + "ms");
-            _overlay.ShowTranslation(sentence, result.Text, result.Detail, result.ToNative, result.Better);
-            AddRecent(sentence, result.Text, result.ToNative, result.Better);
+            _overlay.ShowTranslation(sentence, result.Text, result.Detail, result.ToNative, result.Better, result.Coach);
+            AddRecent(sentence, result.Text, result.ToNative, result.Better, result.Coach);
+            _lastResult = (sentence, result);
+            if (!_capturing && string.Equals(sentence, _recordAfter, StringComparison.Ordinal))
+                Record(sentence, result);
             ApplyTranslation(result.ToNative);
             if (result.Words is { Count: > 0 } words)
                 _overlay.ShowStudy(words); // 和译文同一次请求带回来的，不用再等。
@@ -757,7 +788,7 @@ sealed class TrayApplicationContext : ApplicationContext
 
         var chinese = _overlay.SourceText;
         _overlay.ShowTranslation(chinese, text, "按义项改写");
-        AddRecent(chinese, text, false, null);
+        AddRecent(chinese, text, false, null, null);
         _overlay.SetStatus("已换成这句，可以复制或写入", OverlayForm.StatusKind.Success);
     }
 
@@ -846,25 +877,56 @@ sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    void AddRecent(string source, string result, bool toNative, string? better)
+    void AddRecent(string source, string result, bool toNative, string? better, Coaching? coach)
     {
         if (result.Length == 0)
             return;
         _recent.RemoveAll(item => string.Equals(item.Result, result, StringComparison.Ordinal));
-        _recent.Insert(0, (source, result, toNative, better));
+        _recent.Insert(0, (source, result, toNative, better, coach));
         if (_recent.Count > RecentLimit)
             _recent.RemoveRange(RecentLimit, _recent.Count - RecentLimit);
+    }
+
+    /// <summary>按 Enter 完成的那句记进学习记录：只记大模型翻的（有纠错或点拨），关了「记到学习记录」就不记。</summary>
+    void Record(string sentence, TranslateResult result)
+    {
+        _recordAfter = "";
+        if (!_config.KeepNotebook || result.Coach == null)
+            return;
+        if (_notebook.Add(sentence, result, _config) is { } entry)
+            TraceLog.Note("notebook add kind=" + entry.Kind + " fixes=" + entry.Fixes.Count);
+    }
+
+    void OpenNotebook(bool review)
+    {
+        if (_notebookForm is not { IsDisposed: false })
+        {
+            var form = new NotebookForm(_notebook, () => _config, (material, token) => _translator.DiagnoseAsync(material, token));
+            form.FormClosed += (_, _) =>
+            {
+                if (ReferenceEquals(_notebookForm, form))
+                    _notebookForm = null;
+            };
+            _notebookForm = form;
+            form.Show();
+        }
+
+        if (_notebookForm.WindowState == FormWindowState.Minimized)
+            _notebookForm.WindowState = FormWindowState.Normal;
+        if (review)
+            _notebookForm.ShowPage(3);
+        _notebookForm.Activate();
     }
 
     void ShowRecent(int index)
     {
         if (index < 0 || index >= _recent.Count)
             return;
-        var (source, result, toNative, better) = _recent[index];
+        var (source, result, toNative, better, coach) = _recent[index];
         if (_capturing)
             EndSession(cancel: true);
         _overlay.ShowIdle("最近翻译", "", OverlayForm.CardPlace.TopCenter);
-        _overlay.ShowTranslation(source, result, "", toNative, better);
+        _overlay.ShowTranslation(source, result, "", toNative, better, coach);
         _overlay.FinishSession();
         CopyResult();
         ScheduleAutoHide();
@@ -907,6 +969,8 @@ sealed class TrayApplicationContext : ApplicationContext
     {
         _toggleItem.Text = _capturing ? "结束本次" : "开始翻译";
         _toggleItem.ShortcutKeyDisplayString = _hotkey.HotkeyRegistered ? _hotkey.HotkeyText : "";
+        var due = _notebook.Stats().Due;
+        _notebookItem.Text = due > 0 ? "学习记录（待复习 " + due + "）…" : "学习记录…";
         _hotkeyItem.Checked = _config.Enabled;
         _hotkeyItem.Text = _config.Enabled && _hotkey.HotkeyRegistered ? "启用热键（" + _hotkey.HotkeyText + "）" : "启用热键";
         _startupItem.Checked = StartupRegistration.IsEnabled;
@@ -936,7 +1000,7 @@ sealed class TrayApplicationContext : ApplicationContext
         for (var i = 0; i < _recent.Count; i++)
         {
             var index = i;
-            var (source, result, toNative, _) = _recent[i];
+            var (source, result, toNative, _, _) = _recent[i];
             // 用空格分词的语言（英文这些）占地方，多留几个字。
             var (from, to) = toNative ? (target, native) : (native, target);
             var label = Shorten(source, from.Spaced ? 30 : 14) + "   →   " + Shorten(result, to.Spaced ? 34 : 18);
@@ -970,6 +1034,7 @@ sealed class TrayApplicationContext : ApplicationContext
 
         var form = new SettingsForm(_config, HotkeyStatus());
         form.Saved += ApplySettings;
+        form.NotebookRequested += (_, _) => OpenNotebook(review: false);
         form.HotkeyEditing += editing =>
         {
             // 录新热键时先放开旧的，不然按下去会被系统热键截走，录不到。
@@ -1017,6 +1082,7 @@ sealed class TrayApplicationContext : ApplicationContext
         {
             _overlay.ApplyTheme();
             _settings?.ApplyTheme(); // 设置窗口自己也立刻换颜色。
+            _notebookForm?.ApplyTheme();
         }
 
         if (_config.AutoHideSeconds <= 0)

@@ -20,6 +20,55 @@ sealed record SenseRewrite(bool Ok, string English, string Chinese, string Detai
 
 sealed record StudyWord(string English, string Chinese, string Why);
 
+/// <param name="Wrong">原文里写错的那一小段（照抄）。</param>
+/// <param name="Right">改正后的写法。</param>
+/// <param name="Type">grammar、word、collocation、literal（中式表达）、spelling、punctuation，见 <see cref="Coaching.Label"/>。</param>
+/// <param name="Why">为什么错，用母语写的一句话。</param>
+sealed record CoachFix(string Wrong, string Right, string Type, string Why);
+
+/// <summary>大模型顺带给的学习反馈。</summary>
+/// <param name="Fixes">反向（自己写的外语）时逐处纠错；空列表表示没发现错误。</param>
+/// <param name="Habit">反向时，这些错误背后的母语思维，和外语该怎么想。</param>
+/// <param name="Tip">正向时的写法点拨：译文和逐字直译哪里不一样。</param>
+sealed record Coaching(IReadOnlyList<CoachFix> Fixes, string Habit, string Tip)
+{
+    public static readonly string[] Types = ["grammar", "word", "collocation", "literal", "spelling", "punctuation"];
+
+    /// <summary>错误类型的中文叫法。中文母语学英文时 literal 叫「中式英语」。</summary>
+    public static string Label(string type, Language native, Language target) => type switch
+    {
+        "grammar" => "语法",
+        "word" => "用词",
+        "collocation" => "搭配",
+        "literal" => Languages.IsChineseEnglish(native, target) ? "中式英语" : "母语直译",
+        "spelling" => "拼写",
+        "punctuation" => "标点",
+        _ => "其他",
+    };
+
+    /// <summary>大模型写的类型名不一定规范：同义词归到六类里，认不出的算 other。</summary>
+    public static string NormalizeType(string type)
+    {
+        var t = type.Trim().ToLowerInvariant();
+        if (Array.IndexOf(Types, t) >= 0)
+            return t;
+        if (t.Contains("chinglish") || t.Contains("literal") || t.Contains("translat") || t.Contains("中式"))
+            return "literal";
+        if (t.Contains("colloc") || t.Contains("搭配"))
+            return "collocation";
+        if (t.Contains("spell") || t.Contains("拼写"))
+            return "spelling";
+        if (t.Contains("punct") || t.Contains("capital") || t.Contains("标点"))
+            return "punctuation";
+        if (t.Contains("word") || t.Contains("vocab") || t.Contains("usage") || t.Contains("用词"))
+            return "word";
+        if (t.Contains("gramm") || t.Contains("tense") || t.Contains("article") || t.Contains("preposition") || t.Contains("agreement")
+            || t.Contains("order") || t.Contains("structure") || t.Contains("语法"))
+            return "grammar";
+        return "other";
+    }
+}
+
 /// <summary>
 /// 把英文译文拆成可点的单词，并解析查词 / 改写接口返回的 JSON。
 /// </summary>
@@ -254,6 +303,47 @@ static class WordStudy
         }
     }
 
+    /// <summary>纠错、思维提示、写法点拨。JSON 里三项都没有（没要求，或格式坏了）时返回 null。</summary>
+    public static Coaching? ParseCoach(string raw)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(ExtractJson(raw));
+            var root = doc.RootElement;
+            var fixesElement = Prop(root, "fixes");
+            var hasHabit = Prop(root, "habit") != null;
+            var hasTip = Prop(root, "tip") != null;
+            if (fixesElement == null && !hasHabit && !hasTip)
+                return null;
+
+            var fixes = new List<CoachFix>();
+            if (fixesElement is { ValueKind: JsonValueKind.Array } array)
+            {
+                foreach (var item in array.EnumerateArray())
+                {
+                    var wrong = ReadString(item, "wrong");
+                    var right = ReadString(item, "right");
+                    if (right.Length == 0)
+                        right = ReadString(item, "correct");
+                    // 原文和改法一样的不算错（大模型偶尔会把没改的也列出来）。
+                    if (wrong.Length == 0 && right.Length == 0 || string.Equals(wrong, right, StringComparison.Ordinal))
+                        continue;
+                    fixes.Add(new CoachFix(Cut(wrong, 80), Cut(right, 80), Coaching.NormalizeType(ReadString(item, "type")), Cut(ReadString(item, "why"), 120)));
+                    if (fixes.Count == 6)
+                        break;
+                }
+            }
+
+            return new Coaching(fixes, Cut(ReadString(root, "habit"), 160), Cut(ReadString(root, "tip"), 160));
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    static string Cut(string text, int max) => text.Length <= max ? text : text[..max] + "…";
+
     public static SenseRewrite ParseRewrite(string raw)
     {
         try
@@ -305,6 +395,14 @@ static class WordStudy
         var study = ParseStudy("```json\n{\"words\":[{\"en\":\"repository\",\"zh\":\"仓库\",\"why\":\"代码仓库\"},{\"en\":\"the\",\"zh\":\"\"}]}\n```");
         if (study.Count != 1 || study[0].English != "repository" || study[0].Chinese != "仓库")
             return "parse study";
+
+        var coach = ParseCoach("{\"fixes\":[{\"wrong\":\"go\",\"right\":\"went\",\"type\":\"Tense\",\"why\":\"yesterday 用过去时\"},"
+            + "{\"wrong\":\"same\",\"right\":\"same\",\"type\":\"word\"},{\"wrong\":\"open the light\",\"right\":\"turn on the light\",\"type\":\"Chinglish\",\"why\":\"开灯不是 open\"}],"
+            + "\"better\":\"x\",\"habit\":\"中文不变形，英文靠动词变化表示时间\"}");
+        if (coach == null || coach.Fixes.Count != 2 || coach.Fixes[0].Type != "grammar" || coach.Fixes[1].Type != "literal" || coach.Habit.Length == 0)
+            return "parse coach";
+        if (ParseCoach("{\"better\":\"x\"}") != null || ParseCoach("{\"fixes\":[]}")?.Fixes.Count != 0 || ParseCoach("{\"tip\":\"换主语\"}")?.Tip != "换主语")
+            return "parse coach empty";
 
         var dict = ParseDictionary("set", """
             [{"word":"set","phonetic":"/set/","meanings":[

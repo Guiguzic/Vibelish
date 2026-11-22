@@ -226,6 +226,21 @@ static class Program
         form.AdoptBetter("Yesterday I went to the library.");
         if (form.WriteText != "Yesterday I went to the library.")
             return "adopt better";
+
+        // 纠错：反向时意思下面逐处列出错误，卡片要变高；正向只有一句写法点拨。
+        form.ShowTranslation("I go to library yesterday.", "我昨天去了图书馆。", "test", toNative: true, better: "I went to the library yesterday.");
+        var plainHeight = form.Height;
+        var coach = new Coaching(
+            new[] { new CoachFix("go", "went", "grammar", "yesterday 要用过去时"), new CoachFix("to library", "to the library", "grammar", "") },
+            "中文靠时间词表示过去，英文要让动词变形", "");
+        form.ShowTranslation("I go to library yesterday.", "我昨天去了图书馆。", "test", toNative: true, better: "I went to the library yesterday.", coach: coach);
+        if (form.Height <= plainHeight + 40 || form.WriteText != "I went to the library yesterday.")
+            return "coach height " + plainHeight + " -> " + form.Height;
+        form.ShowTranslation("政策已经落实了。", "The policy has been implemented.", "test", coach: new Coaching(Array.Empty<CoachFix>(), "", "中文无主语，英文用被动 has been implemented"));
+        var tipHeight = form.Height;
+        form.ShowTranslation("政策已经落实了。", "The policy has been implemented.", "test");
+        if (tipHeight <= form.Height)
+            return "tip height";
         form.ShowTranslation("政策已经落实了。", "The policy was implemented.", "test");
         if (form.ToNative || form.WriteText != "The policy was implemented.")
             return "back to english";
@@ -260,6 +275,11 @@ static class Program
             return "hotkey f9";
         if (Translator.CleanModelText("<think>hmm</think>\n\"Hello.\"") != "Hello.")
             return "clean model text";
+        if (Translator.CleanReport("## 1. 问题\n- **主谓一致**：it make\n\n\n\n2. 思维") != "1. 问题\n· 主谓一致：it make\n\n2. 思维")
+            return "clean report";
+        var coached = Translator.SplitCoach("帮我修 bug。\n<<<WORDS>>>\n{\"fixes\":[{\"wrong\":\"crash\",\"right\":\"crashes\",\"type\":\"agreement\"}],\"better\":\"x\",\"habit\":\"\"}");
+        if (coached is not { Fixes: [{ Type: "grammar", Right: "crashes" }] } || Translator.SplitCoach("只有译文") != null)
+            return "split coach";
         if (!AppConfig.IsLocalEndpoint("http://192.168.1.40/v1") || AppConfig.IsLocalEndpoint("https://api.deepseek.com/v1"))
             return "local endpoint";
         return null;
@@ -309,6 +329,28 @@ static class Program
             TryApplyPair(config, pair);
         config = config.Normalize();
         Theme.Apply(parts[0], "normal", config.Accent);
+        if (what.StartsWith("notebook", StringComparison.Ordinal))
+        {
+            // notebook 或 notebook:3（直接打开复习页）。用临时文件里的示例数据，不碰真正的学习记录。
+            // 后面带 + 时翻开复习卡的答案，比如 notebook:3+。
+            var page = what.Length > 9 && int.TryParse(what[9..].TrimEnd('+'), out var index) ? index : 0;
+            var path = Path.Combine(Path.GetTempPath(), "vibelish-notebook-preview.json");
+            File.Delete(path);
+            var book = SampleNotebook(path, config);
+            using var form = new NotebookForm(book, () => config, (_, _) => Task.FromResult(new TranslateResult(false, "", "预览里不调用接口")));
+            form.Shown += (_, _) =>
+            {
+                form.ShowPage(page);
+                if (what.EndsWith('+'))
+                    form.PreviewReveal();
+            };
+            if (shot != null)
+                CaptureLater(form, shot);
+            Application.Run(form);
+            File.Delete(path);
+            return 0;
+        }
+
         if (what.StartsWith("settings", StringComparison.Ordinal))
         {
             // settings 或 settings:2（直接打开第 3 页）。
@@ -395,7 +437,15 @@ static class Program
                     good ? "你能帮我重构一下这个函数，让它更容易测试吗？" : "帮我修复这个 bug：用户点击按钮时，登录页面总是崩溃。",
                     "deepseek-chat · 英译中",
                     toNative: true,
-                    better: good ? "" : "Please help me fix this bug: the login page invariably crashes whenever a user clicks the button.");
+                    better: good ? "" : "Please help me fix this bug: the login page invariably crashes whenever a user clicks the button.",
+                    coach: good
+                        ? new Coaching(Array.Empty<CoachFix>(), "", "")
+                        : new Coaching(new[]
+                        {
+                            new CoachFix("crash", "crashes", "grammar", "主语是单数 page，动词要加 -es"),
+                            new CoachFix("when user click", "when a user clicks", "grammar", "可数名词单数前要有冠词，动词跟着变"),
+                            new CoachFix("bug, the", "bug: the", "punctuation", "两个完整句不能只用逗号连"),
+                        }, "中文名词不分单复数、动词不变形；英文先定主语的数，再让动词跟着它变", ""));
                 card.ShowStudy(good
                     ? new[] { new StudyWord("refactor", "重构", "编程常用词") }
                     : new[]
@@ -404,6 +454,13 @@ static class Program
                         new StudyWord("crashes", "崩溃", "第三人称单数要加 -es"),
                         new StudyWord("whenever", "每当", "替代 when，强调每次"),
                     });
+                break;
+            case "nochat":
+                // 没配大模型：英译中只有意思，提示去配 DeepSeek。
+                card.ApplyOptions(new AppConfig { Engine = "auto" }.Normalize());
+                card.BeginListening(config.ArrowLabel(true) + " · 免费引擎", hint);
+                card.UpdateSource("I go to library yesterday for review english", Rectangle.Empty, sourceIsTarget: true);
+                card.ShowTranslation("I go to library yesterday for review english", "我昨天去图书馆复习英语", "腾讯交互翻译", toNative: true);
                 break;
             case "listening":
                 card.BeginListening(listen, hint);
@@ -426,7 +483,8 @@ static class Program
                 card.ShowTranslation(
                     "虽然准备考研很辛苦，但我相信坚持下去一定会有收获。",
                     "Arduous as preparation for the postgraduate entrance examination may be, I remain convinced that perseverance will ultimately yield its rewards.",
-                    "deepseek-chat · 考研");
+                    "deepseek-chat · 考研",
+                    coach: new Coaching(Array.Empty<CoachFix>(), "", "中文「虽然…但…」，英文用倒装 Arduous as … may be 表让步，更书面"));
                 card.ShowStudy(new[]
                 {
                     new StudyWord("arduous", "艰辛的", "比 hard 更书面"),
@@ -452,6 +510,46 @@ static class Program
 
         Application.Run();
         return 0;
+    }
+
+    /// <summary>学习记录预览用的示例：几句写错的英文、一句写对的、两句中译英，再加一份诊断。</summary>
+    static Notebook SampleNotebook(string path, AppConfig config)
+    {
+        var book = Notebook.Load(path);
+        void Write(string source, string meaning, string better, string habit, params CoachFix[] fixes) =>
+            book.Add(source, new TranslateResult(true, meaning, "", ToNative: true, Better: better, Coach: new Coaching(fixes, habit, "")), config);
+        void Translate(string source, string english, string tip) =>
+            book.Add(source, new TranslateResult(true, english, "", Coach: new Coaching(Array.Empty<CoachFix>(), "", tip)), config);
+
+        Write("help me fix this bug, the login page always crash when user click the button", "帮我修这个 bug：用户点按钮时登录页总是崩溃。",
+            "Please help me fix this bug: the login page invariably crashes whenever a user clicks the button.",
+            "中文名词不分单复数、动词不变形；英文先定主语的数，再让动词跟着它变",
+            new CoachFix("crash", "crashes", "grammar", "主语是单数 page，动词要加 -es"),
+            new CoachFix("when user click", "when a user clicks", "grammar", "单数可数名词前要有冠词"),
+            new CoachFix("bug, the", "bug: the", "punctuation", "两个完整句不能只用逗号连"));
+        Write("I very like this design, it make the code more clear", "我很喜欢这个设计，它让代码更清楚。",
+            "I am particularly fond of this design, as it renders the code considerably clearer.",
+            "「很喜欢」不能逐字说成 very like，英文用 really like 或换成 be fond of",
+            new CoachFix("very like", "really like", "literal", "very 不能直接修饰动词"),
+            new CoachFix("it make", "it makes", "grammar", "it 后面动词加 -s"),
+            new CoachFix("more clear", "clearer", "word", "单音节形容词用 -er"));
+        Write("Please run the tests again after you change the config.", "改完配置以后请再跑一遍测试。", "", "");
+        Write("we need discuss about the plan tomorrow", "我们明天需要讨论这个计划。",
+            "We need to discuss the plan tomorrow.", "中文「讨论一下关于」，英文 discuss 本身就带宾语",
+            new CoachFix("need discuss", "need to discuss", "grammar", "need 作实义动词后面接 to do"),
+            new CoachFix("discuss about", "discuss", "collocation", "discuss 是及物动词，不加 about"));
+        Translate("虽然准备考研很辛苦，但我相信坚持下去一定会有收获。",
+            "Arduous as preparation for the postgraduate entrance examination may be, I remain convinced that perseverance will ultimately yield its rewards.",
+            "中文「虽然…但…」，英文用倒装 Arduous as … may be 表让步");
+        Translate("这个函数太长了，最好拆成几个小函数。", "This function is excessively long; it would be advisable to decompose it into several smaller ones.",
+            "「最好」不直译 best，用 it would be advisable to do");
+        book.SetReport("1. 最常见的三类问题\n· 主谓一致：it make → it makes。主语是第三人称单数时，现在时动词要加 -s。\n"
+            + "· 冠词缺失：when user click → when a user clicks。单数可数名词前要有 a / the。\n"
+            + "· 中式搭配：discuss about → discuss；very like → really like。\n\n"
+            + "2. 背后的思维\n中文名词不分单复数、动词不变形，写英文时要先确定主语的数，再让动词跟着变。\n\n"
+            + "3. 每天这样练\n· 写完一句先找主语，检查动词有没有跟着变。\n· 每天精读一段考研真题阅读，抄下 3 个动宾搭配。\n· 每周写一篇考研小作文，用学习记录里的错题自查。\n\n"
+            + "4. 练习句\n· 他每天都去图书馆复习英语。\n· 我们需要讨论一下这个方案。\n· 这个页面加载得很慢。");
+        return book;
     }
 
     static void CaptureLater(Form form, string path)
@@ -510,7 +608,7 @@ static class Program
         if (args.Length >= 1 && args[0] == "--selftest-words")
         {
             _ = AttachConsole(AttachParentProcess);
-            var failure = WordStudy.SelfTest() ?? CardSelfTest();
+            var failure = WordStudy.SelfTest() ?? Notebook.SelfTest() ?? CardSelfTest();
             Console.WriteLine(failure == null ? "ok" : "FAIL " + failure);
             return failure == null ? 0 : 1;
         }
@@ -657,10 +755,19 @@ static class Program
             Console.WriteLine(result.Ok ? result.Text : "ERROR " + result.Detail);
             if (result.Better is { Length: > 0 } better)
                 Console.WriteLine("better=" + better);
+            if (result.Coach is { } coach)
+            {
+                foreach (var fix in coach.Fixes)
+                    Console.WriteLine("fix=[" + fix.Type + "] " + fix.Wrong + " -> " + fix.Right + " | " + fix.Why);
+                if (coach.Habit.Length > 0)
+                    Console.WriteLine("habit=" + coach.Habit);
+                if (coach.Tip.Length > 0)
+                    Console.WriteLine("tip=" + coach.Tip);
+            }
             Console.WriteLine("engine=" + result.Detail + " pair=" + probe.NativeLanguage + ">" + probe.TargetLanguage
                 + " dir=" + (result.ToNative ? "reverse" : "forward")
                 + " first=" + (result.FirstMs > 0 ? result.FirstMs : first) + "ms total=" + watch.ElapsedMilliseconds + "ms"
-                + " words=" + (result.Words?.Count ?? 0));
+                + " words=" + (result.Words?.Count ?? 0) + " fixes=" + (result.Coach?.Fixes.Count.ToString() ?? "-"));
             return result.Ok ? 0 : 1;
         }
 

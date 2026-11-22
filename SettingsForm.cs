@@ -87,7 +87,9 @@ sealed class SettingsForm : Form
     readonly ToggleSwitch _showEngine = new();
     readonly PopupButton _autoHide = new("不收起", "5 秒后", "10 秒后", "30 秒后");
 
-    // 单词与朗读
+    // 学习
+    readonly ToggleSwitch _coaching = new();
+    readonly ToggleSwitch _keepNotebook = new();
     readonly ToggleSwitch _study = new();
     readonly SegmentedControl _studyStyle = new("仅单词", "带释义", "详细");
     readonly ToggleSwitch _clickLookup = new();
@@ -146,6 +148,9 @@ sealed class SettingsForm : Form
 
     /// <summary>每改一项都会触发：新配置，以及是否开机自动启动。</summary>
     public event Action<AppConfig, bool>? Saved;
+
+    /// <summary>点了「打开学习记录」。</summary>
+    public event EventHandler? NotebookRequested;
 
     /// <summary>正在录热键（true）/ 录完了（false）。录的时候托盘要先放开旧热键。</summary>
     public event Action<bool>? HotkeyEditing;
@@ -251,6 +256,8 @@ sealed class SettingsForm : Form
         _urlRow = api.AddRow("接口地址", "", _baseUrl);
         api.AddRow("API Key", "", _apiKey);
         api.AddRow("模型", "", _model);
+        api.AddRow("还没有 API Key？", "推荐 DeepSeek：中文理解好、费用低。在它的开放平台注册、充值几块钱、创建 API Key，粘贴到上面，服务商选 DeepSeek 就行",
+            LinkButton("去申请", () => OpenUrl("https://platform.deepseek.com/api_keys")));
         _baseUrl.Placeholder = "https://api.deepseek.com/v1";
         _apiKey.Placeholder = "sk-…";
         _model.Placeholder = "deepseek-chat";
@@ -275,7 +282,11 @@ sealed class SettingsForm : Form
         layout.AddRow("显示译文来源", "模型名或翻译引擎", _showEngine);
         layout.AddRow("完成后自动收起", "按 Enter 完成以后", _autoHide);
 
-        var words = AddPage(Glyphs.Dictionary, "单词与朗读");
+        var words = AddPage(Glyphs.Dictionary, "学习");
+        var coach = words.AddGroup("纠错与记录");
+        coach.AddRow("纠错与写法点拨", "写英文时逐处指出语法、用词、搭配、中式英语的错误，说清为什么、背后是什么中文思维；写中文时点拨译文和逐字直译哪里不一样（需要大模型接口）", _coaching);
+        coach.AddRow("记到学习记录", "按 Enter 完成的句子记进错题本和中译英，可以间隔复习，也能让大模型总结你的问题。只存在这台电脑", _keepNotebook);
+        coach.AddRow("学习记录", "今天写了多少、最常犯哪类错、复习错题", LinkButton("打开", () => NotebookRequested?.Invoke(this, EventArgs.Empty)));
         var study = words.AddGroup("重点词");
         study.AddRow("显示重点词", "译完挑出值得记的词，和译文一起生成，不多等（需要大模型接口）", _study);
         study.AddRow("显示方式", "「详细」会把为什么值得记也写出来", _studyStyle);
@@ -345,6 +356,8 @@ sealed class SettingsForm : Form
         _showHints.Checked = config.ShowHints;
         _showEngine.Checked = config.ShowEngine;
         _autoHide.SelectedIndex = config.AutoHideSeconds <= 0 ? 0 : config.AutoHideSeconds <= 5 ? 1 : config.AutoHideSeconds <= 10 ? 2 : 3;
+        _coaching.Checked = config.Coaching;
+        _keepNotebook.Checked = config.KeepNotebook;
         _study.Checked = config.StudyWords;
         _studyStyle.SelectedIndex = Math.Max(0, Array.IndexOf(StyleKeys, config.StudyStyle));
         _clickLookup.Checked = config.ClickLookup;
@@ -382,6 +395,8 @@ sealed class SettingsForm : Form
         next.ShowHints = _showHints.Checked;
         next.ShowEngine = _showEngine.Checked;
         next.AutoHideSeconds = HideValues[_autoHide.SelectedIndex];
+        next.Coaching = _coaching.Checked;
+        next.KeepNotebook = _keepNotebook.Checked;
         next.StudyWords = _study.Checked;
         next.StudyStyle = StyleKeys[_studyStyle.SelectedIndex];
         next.ClickLookup = _clickLookup.Checked;
@@ -393,7 +408,7 @@ sealed class SettingsForm : Form
 
     void WireEvents()
     {
-        foreach (var toggle in new[] { _enabled, _startup, _autoCopy, _autoWrite, _stream, _fast, _showSource, _showHints, _showEngine, _study, _clickLookup, _showSpeak, _speakOnLookup })
+        foreach (var toggle in new[] { _enabled, _startup, _autoCopy, _autoWrite, _stream, _fast, _showSource, _showHints, _showEngine, _coaching, _keepNotebook, _study, _clickLookup, _showSpeak, _speakOnLookup })
             toggle.CheckedChanged += (_, _) => Changed(immediate: true);
         foreach (var segmented in new[] { _direction, _level, _pause, _theme, _size, _studyStyle, _speed })
             segmented.SelectedIndexChanged += (_, _) => Changed(immediate: true);
@@ -508,8 +523,8 @@ sealed class SettingsForm : Form
             _directionRow.Subtitle = DirectionKeys[_direction.SelectedIndex] switch
             {
                 "forward" => "输入" + n.Name + "，翻成" + t.Name,
-                "reverse" => "直接用" + t.Name + "写，卡片显示" + n.Name + "意思；配了大模型还会给出更地道的说法",
-                _ => "写" + n.Name + "就翻成" + t.Name + "；写" + t.Name + "就翻成" + n.Name + "，配了大模型还会给出更地道的说法"
+                "reverse" => "直接用" + t.Name + "写，卡片显示" + n.Name + "意思；配了大模型还会逐处纠错、给出更地道的说法",
+                _ => "写" + n.Name + "就翻成" + t.Name + "；写" + t.Name + "就翻成" + n.Name + "，配了大模型还会逐处纠错、给出更地道的说法"
                     + (n.Script == t.Script ? (n.Script == Script.Latin ? "。两种都用拉丁字母，只能靠常用词来分，分错时请手动选方向" : "。两种文字太像，自动分不清，请手动选方向") : ""),
             };
         }
@@ -524,7 +539,7 @@ sealed class SettingsForm : Form
         {
             "auto" when chat => "现在会用大模型；出错时自动改用免费引擎",
             "auto" when unsupported != null => "还没配置大模型，现在用免费引擎（腾讯交互翻译不支持" + unsupported.Name + "，改用 MyMemory / Google）",
-            "auto" => "还没配置大模型，现在用免费引擎（腾讯交互翻译，慢了同时问 MyMemory / Google）",
+            "auto" => "还没配置大模型，现在用免费引擎（腾讯交互翻译，慢了同时问 MyMemory / Google）。想要考研难度的译文和纠错，去「大模型」里选 DeepSeek",
             "openai" => chat ? "只用大模型，出错不换引擎" : "还没填好大模型接口，翻译会失败",
             "transmart" when unsupported != null => "不支持" + unsupported.Name + "，请换一个引擎",
             "transmart" => "国内访问快，质量接近机器翻译平均水平",
@@ -680,6 +695,18 @@ sealed class SettingsForm : Form
         }
     }
 
+    static void OpenUrl(string url)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch
+        {
+            // Ignore.
+        }
+    }
+
     static void OpenFile(string file)
     {
         try
@@ -692,153 +719,6 @@ sealed class SettingsForm : Form
         catch
         {
             // Ignore.
-        }
-    }
-
-    /// <summary>一页设置：大标题，下面是若干分组和说明文字，放不下时可以滚动。</summary>
-    sealed class SettingsPage : Panel
-    {
-        readonly TextLabel _title = new() { SingleLine = true };
-        readonly List<Control> _items = new();
-        readonly Dictionary<SettingsGroup, TextLabel> _captions = new();
-        bool _arranging;
-
-        public SettingsPage(string title)
-        {
-            AutoScroll = true;
-            DoubleBuffered = true;
-            _title.Text = title;
-            Controls.Add(_title);
-        }
-
-        public SettingsGroup AddGroup(string caption)
-        {
-            var group = new SettingsGroup();
-            if (caption.Length > 0)
-            {
-                var label = new TextLabel { Text = caption, SingleLine = true };
-                _captions[group] = label;
-                Controls.Add(label);
-            }
-
-            _items.Add(group);
-            Controls.Add(group);
-            return group;
-        }
-
-        public TextLabel AddNote(string text)
-        {
-            var note = new TextLabel { Text = text };
-            _items.Add(note);
-            Controls.Add(note);
-            return note;
-        }
-
-        public void ApplyTheme()
-        {
-            var p = Theme.Current;
-            BackColor = p.Window;
-            _title.Font = Theme.Ui(15F, FontStyle.Bold);
-            _title.ForeColor = p.Text;
-            foreach (var caption in _captions.Values)
-            {
-                caption.Font = Theme.Ui(8.5F, FontStyle.Bold);
-                caption.ForeColor = p.Muted;
-            }
-
-            foreach (var item in _items)
-            {
-                if (item is SettingsGroup group)
-                {
-                    group.ApplyTheme();
-                }
-                else if (item is TextLabel note)
-                {
-                    note.Font = Theme.Ui(8.25F);
-                    note.ForeColor = p.Muted;
-                }
-            }
-
-            NativeTheme.Apply(this, p.Dark);
-            Arrange();
-            Invalidate(true);
-        }
-
-        protected override void OnHandleCreated(EventArgs e)
-        {
-            base.OnHandleCreated(e);
-            NativeTheme.Apply(this, Theme.Current.Dark);
-        }
-
-        protected override void OnResize(EventArgs eventargs)
-        {
-            base.OnResize(eventargs);
-            Arrange();
-        }
-
-        protected override void OnLayout(LayoutEventArgs levent)
-        {
-            base.OnLayout(levent);
-            // 某一行的说明文字变了（比如测试连接的结果），行高可能跟着变。
-            if (Visible)
-                Arrange();
-        }
-
-        protected override void OnVisibleChanged(EventArgs e)
-        {
-            base.OnVisibleChanged(e);
-            if (Visible)
-                Arrange();
-        }
-
-        /// <summary>从上往下排：标题、分组、说明。</summary>
-        public void Arrange()
-        {
-            if (_arranging || Width <= 0)
-                return;
-            _arranging = true;
-            try
-            {
-                var scale = DeviceDpi / 96.0;
-                int Sc(int value) => (int)Math.Round(value * scale);
-                var offset = AutoScrollPosition;
-                var padX = Sc(28);
-                var width = Math.Max(Sc(200), ClientSize.Width - padX * 2);
-                var y = Sc(22);
-                var titleHeight = _title.Measure(width).Height;
-                _title.SetBounds(padX + offset.X, y + offset.Y, width, titleHeight);
-                y += titleHeight + Sc(14);
-                foreach (var item in _items)
-                {
-                    if (item is SettingsGroup group)
-                    {
-                        if (_captions.TryGetValue(group, out var caption))
-                        {
-                            var h = caption.Measure(width).Height;
-                            caption.SetBounds(padX + Sc(14) + offset.X, y + offset.Y, width - Sc(14), h);
-                            y += h + Sc(6);
-                        }
-
-                        var height = group.Arrange(width);
-                        group.SetBounds(padX + offset.X, y + offset.Y, width, height);
-                        y += height + Sc(20);
-                    }
-                    else if (item is TextLabel note)
-                    {
-                        var h = note.Measure(width - Sc(28)).Height;
-                        note.SetBounds(padX + Sc(14) + offset.X, y - Sc(10) + offset.Y, width - Sc(28), h);
-                        y += h + Sc(10);
-                    }
-                }
-
-                AutoScrollMinSize = new Size(0, y + Sc(8));
-                foreach (var item in _items)
-                    item.Invalidate(true);
-            }
-            finally
-            {
-                _arranging = false;
-            }
         }
     }
 

@@ -44,6 +44,12 @@ sealed class AppConfig
     /// <summary>译完自动挑出值得记的词（需要大模型接口）。</summary>
     public bool StudyWords { get; set; } = true;
 
+    /// <summary>纠错与点拨（需要大模型接口）：自己写外语时逐处指出错误和背后的母语思维；写母语时说一句译文的写法。</summary>
+    public bool Coaching { get; set; } = true;
+
+    /// <summary>按 Enter 完成的句子记进学习记录（错题本、中译英），可以复习、让大模型总结。</summary>
+    public bool KeepNotebook { get; set; } = true;
+
     /// <summary>在学的语言写到多难：kaoyan（考研 / 高级）、cet6（六级 / 中级）、plain（日常）。名字是历史原因。</summary>
     public string EnglishLevel { get; set; } = "kaoyan";
 

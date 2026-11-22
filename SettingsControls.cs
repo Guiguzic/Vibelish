@@ -6,6 +6,13 @@ namespace Vibelish;
 // 设置窗口用的一组自绘控件：开关、分段选择、下拉按钮、输入框、分组列表、侧栏。
 // 都在绘制时读 Theme.Current，换主题后 Invalidate 一下就跟着变。
 
+/// <summary>占满整行、高度随宽度变的控件（放在 <see cref="SettingsRow.Stacked"/> 的行里）。</summary>
+interface IFlowControl
+{
+    /// <summary>按宽度排好里面的东西，返回需要的高度。</summary>
+    int Arrange(int width);
+}
+
 abstract class ThemedControl : Control
 {
     protected ThemedControl()
@@ -724,6 +731,8 @@ sealed class SettingsRow : ThemedControl
             _title.Visible = hasTitle;
             if (control is TextLabel label)
                 controlSize = new Size(inner, label.Measure(inner).Height);
+            else if (control is IFlowControl flow)
+                controlSize = new Size(inner, flow.Arrange(inner));
             else
                 controlSize.Width = Math.Min(inner, controlSize.Width);
             control.SetBounds(padX, y, controlSize.Width, controlSize.Height);
@@ -1100,6 +1109,175 @@ static class NativeTheme
         catch
         {
             // Ignore.
+        }
+    }
+}
+
+/// <summary>一页设置：大标题，下面是若干分组和说明文字，放不下时可以滚动。</summary>
+sealed class SettingsPage : Panel
+{
+    readonly TextLabel _title = new() { SingleLine = true };
+    readonly List<Control> _items = new();
+    readonly Dictionary<SettingsGroup, TextLabel> _captions = new();
+    bool _arranging;
+
+    public SettingsPage(string title)
+    {
+        AutoScroll = true;
+        DoubleBuffered = true;
+        _title.Text = title;
+        Controls.Add(_title);
+    }
+
+    public SettingsGroup AddGroup(string caption)
+    {
+        var group = new SettingsGroup();
+        if (caption.Length > 0)
+        {
+            var label = new TextLabel { Text = caption, SingleLine = true };
+            _captions[group] = label;
+            Controls.Add(label);
+        }
+
+        _items.Add(group);
+        Controls.Add(group);
+        return group;
+    }
+
+    public TextLabel AddNote(string text)
+    {
+        var note = new TextLabel { Text = text };
+        _items.Add(note);
+        Controls.Add(note);
+        return note;
+    }
+
+    /// <summary>去掉标题以外的所有分组和说明（列表类的页面重建内容用）。</summary>
+    public void ClearItems()
+    {
+        SuspendLayout();
+        foreach (var item in _items)
+        {
+            Controls.Remove(item);
+            item.Dispose();
+        }
+
+        foreach (var caption in _captions.Values)
+        {
+            Controls.Remove(caption);
+            caption.Dispose();
+        }
+
+        _items.Clear();
+        _captions.Clear();
+        AutoScrollPosition = Point.Empty;
+        ResumeLayout(false);
+    }
+
+    public void ApplyTheme()
+    {
+        var p = Theme.Current;
+        BackColor = p.Window;
+        _title.Font = Theme.Ui(15F, FontStyle.Bold);
+        _title.ForeColor = p.Text;
+        foreach (var caption in _captions.Values)
+        {
+            caption.Font = Theme.Ui(8.5F, FontStyle.Bold);
+            caption.ForeColor = p.Muted;
+        }
+
+        foreach (var item in _items)
+        {
+            if (item is SettingsGroup group)
+            {
+                group.ApplyTheme();
+            }
+            else if (item is TextLabel note)
+            {
+                note.Font = Theme.Ui(8.25F);
+                note.ForeColor = p.Muted;
+            }
+        }
+
+        NativeTheme.Apply(this, p.Dark);
+        Arrange();
+        Invalidate(true);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        NativeTheme.Apply(this, Theme.Current.Dark);
+    }
+
+    protected override void OnResize(EventArgs eventargs)
+    {
+        base.OnResize(eventargs);
+        Arrange();
+    }
+
+    protected override void OnLayout(LayoutEventArgs levent)
+    {
+        base.OnLayout(levent);
+        // 某一行的说明文字变了（比如测试连接的结果），行高可能跟着变。
+        if (Visible)
+            Arrange();
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (Visible)
+            Arrange();
+    }
+
+    /// <summary>从上往下排：标题、分组、说明。</summary>
+    public void Arrange()
+    {
+        if (_arranging || Width <= 0)
+            return;
+        _arranging = true;
+        try
+        {
+            var scale = DeviceDpi / 96.0;
+            int Sc(int value) => (int)Math.Round(value * scale);
+            var offset = AutoScrollPosition;
+            var padX = Sc(28);
+            var width = Math.Max(Sc(200), ClientSize.Width - padX * 2);
+            var y = Sc(22);
+            var titleHeight = _title.Measure(width).Height;
+            _title.SetBounds(padX + offset.X, y + offset.Y, width, titleHeight);
+            y += titleHeight + Sc(14);
+            foreach (var item in _items)
+            {
+                if (item is SettingsGroup group)
+                {
+                    if (_captions.TryGetValue(group, out var caption))
+                    {
+                        var h = caption.Measure(width).Height;
+                        caption.SetBounds(padX + Sc(14) + offset.X, y + offset.Y, width - Sc(14), h);
+                        y += h + Sc(6);
+                    }
+
+                    var height = group.Arrange(width);
+                    group.SetBounds(padX + offset.X, y + offset.Y, width, height);
+                    y += height + Sc(20);
+                }
+                else if (item is TextLabel note)
+                {
+                    var h = note.Measure(width - Sc(28)).Height;
+                    note.SetBounds(padX + Sc(14) + offset.X, y - Sc(10) + offset.Y, width - Sc(28), h);
+                    y += h + Sc(10);
+                }
+            }
+
+            AutoScrollMinSize = new Size(0, y + Sc(8));
+            foreach (var item in _items)
+                item.Invalidate(true);
+        }
+        finally
+        {
+            _arranging = false;
         }
     }
 }

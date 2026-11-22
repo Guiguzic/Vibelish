@@ -12,6 +12,7 @@ namespace Vibelish;
 /// <param name="FirstMs">流式输出时第一个词出来用了多久（毫秒），0 表示没有流式。</param>
 /// <param name="ToNative">反向（在学的语言 → 母语，Text 是母语）还是正向（Text 是在学的语言）。</param>
 /// <param name="Better">反向时大模型给的更地道的说法；空字符串表示原句已经很地道，null 表示没有评价（免费引擎）。</param>
+/// <param name="Coach">纠错、思维提示、写法点拨；免费引擎或关了「纠错与点拨」时是 null。</param>
 sealed record TranslateResult(
     bool Ok,
     string Text,
@@ -20,7 +21,8 @@ sealed record TranslateResult(
     long FirstMs = 0,
     long TotalMs = 0,
     bool ToNative = false,
-    string? Better = null);
+    string? Better = null,
+    Coaching? Coach = null);
 
 sealed class Translator
 {
@@ -72,6 +74,7 @@ sealed class Translator
         probe.TargetLanguage = "en";
         probe.EnglishLevel = "plain";
         probe.StudyWords = false;
+        probe.Coaching = false;
         return new Translator(probe).TranslateAsync("今天天气不错，我们去公园走走吧。", cancellationToken, _ => { });
     }
 
@@ -192,7 +195,7 @@ sealed class Translator
 
         var toNative = _config.ToNative(text);
         var key = _config.Engine + "\n" + _config.EnglishLevel + "\n" + _config.OpenAiBaseUrl + "\n" + _config.OpenAiModel
-            + "\n" + _config.StudyWords + "\n" + _config.NativeLanguage + "\n" + _config.TargetLanguage + "\n" + toNative + "\n" + text;
+            + "\n" + _config.StudyWords + "\n" + _config.Coaching + "\n" + _config.NativeLanguage + "\n" + _config.TargetLanguage + "\n" + toNative + "\n" + text;
         if (_cache.TryGetValue(key, out var cached))
             return cached;
 
@@ -440,7 +443,8 @@ sealed class Translator
 
         var native = _config.Native;
         var target = _config.Target;
-        var prompt = toNative ? ReversePrompt(level, withWords, native, target) : TranslationPrompt(level, withWords, native, target);
+        var coaching = _config.Coaching;
+        var prompt = toNative ? ReversePrompt(level, withWords, coaching, native, target) : TranslationPrompt(level, withWords, coaching, native, target);
         var chat = await ChatAsync(prompt, text, level == "kaoyan" ? 0.3 : 0.2, cancellationToken, onDelta);
         if (!chat.Ok)
             return chat;
@@ -448,12 +452,47 @@ sealed class Translator
         var (translated, words, better) = SplitWords(chat.Text);
         if (translated.Length == 0)
             return new TranslateResult(false, "", "接口没有返回译文");
+        var coach = coaching ? SplitCoach(chat.Text) : null;
         if (!toNative)
+        {
             better = null;
-        else if (better != null && Lang.SameSentence(better, text))
-            better = "";
+            coach = coach is { Tip.Length: > 0 } ? coach with { Fixes = Array.Empty<CoachFix>(), Habit = "" } : null;
+        }
+        else
+        {
+            if (better != null && Lang.SameSentence(better, text))
+                better = "";
+            if (coach != null)
+                coach = coach with { Tip = "" };
+        }
+
         return new TranslateResult(true, translated, ModelLabel() + " · " + (toNative ? AppConfig.PairLabel(target, native) : _config.LevelLabel),
-            withWords ? words : null, first, watch.ElapsedMilliseconds, toNative, better);
+            withWords ? words : null, first, watch.ElapsedMilliseconds, toNative, better, coach);
+    }
+
+    /// <summary>学习记录里的「让大模型分析我的问题」：把最近的错误和句子交给大模型，写一份诊断。</summary>
+    public async Task<TranslateResult> DiagnoseAsync(string material, CancellationToken cancellationToken)
+    {
+        if (!_config.HasChatApi)
+            return new TranslateResult(false, "", "请先在设置 → 大模型里填好接口（推荐 DeepSeek）");
+        var chat = await ChatAsync(DiagnosePrompt(_config.EnglishLevel, _config.Native, _config.Target), material, 0.4, cancellationToken);
+        return chat.Ok ? chat with { Text = CleanReport(chat.Text) } : chat;
+    }
+
+    /// <summary>诊断要的是纯文字：去掉思考过程和 Markdown 的粗体、标题符号。</summary>
+    internal static string CleanReport(string text)
+    {
+        text = ThinkBlock.Replace(text, "").Replace("**", "").Replace("__", "");
+        var lines = text.Replace("\r", "").Split('\n')
+            .Select(line => line.TrimEnd())
+            .Select(line => line.TrimStart().StartsWith('#') ? line.TrimStart().TrimStart('#').Trim() : line)
+            .Select(line => line.TrimStart().StartsWith("- ", StringComparison.Ordinal) || line.TrimStart().StartsWith("* ", StringComparison.Ordinal)
+                ? "· " + line.TrimStart()[2..]
+                : line);
+        var result = string.Join("\n", lines).Trim();
+        while (result.Contains("\n\n\n", StringComparison.Ordinal))
+            result = result.Replace("\n\n\n", "\n\n");
+        return result;
     }
 
     /// <summary>调一次 chat/completions。除了调用方主动取消，所有错误都变成失败结果，不抛异常。
@@ -698,6 +737,14 @@ sealed class Translator
         var translated = CleanModelText(text[..marker.Index]);
         var json = text[(marker.Index + marker.Length)..];
         return (translated, WordStudy.ParseStudy(json), WordStudy.ParseBetter(json));
+    }
+
+    /// <summary>分隔行后面 JSON 里的纠错、思维提示和写法点拨。</summary>
+    internal static Coaching? SplitCoach(string raw)
+    {
+        var text = ThinkBlock.Replace(raw ?? "", "");
+        var marker = WordsSplit.Match(text);
+        return marker.Success ? WordStudy.ParseCoach(text[(marker.Index + marker.Length)..]) : null;
     }
 
     /// <summary>各家关闭「深度思考」的参数不一样；不认识的服务就不带。</summary>
@@ -997,31 +1044,64 @@ sealed class Translator
         + "\"meaning\" and \"why\" must be in " + native.English + "; keep \"why\" under 16 characters (or 8 words).";
 
     /// <summary>考研难度以前要两次请求（先直译再润色），现在一次到位。</summary>
-    static string TranslationPrompt(string level, bool withWords, Language native, Language target)
+    static string TranslationPrompt(string level, bool withWords, bool coaching, Language native, Language target)
     {
         var prompt = "Translate the " + native.English + " text into " + LevelStyle(level, native, target) + ". " + FidelityRules;
-        if (!withWords)
+        if (!withWords && !coaching)
             return prompt + " Output only the " + target.English + " text, with no notes, labels or quotation marks.";
 
-        return prompt
-            + " First output only the " + target.English + " text, with no notes, labels or quotation marks. "
-            + "Then output a line containing only " + WordsMarker + " followed by one line of JSON: "
-            + "{\"words\":[{\"word\":\"the word or phrase exactly as it appears in your " + target.English + "\","
-            + "\"meaning\":\"its meaning in this sentence\",\"why\":\"a short note\"}]}. "
-            + WordRules(native);
+        var fields = new List<string>();
+        if (coaching)
+            fields.Add("\"tip\":\"...\"");
+        if (withWords)
+            fields.Add("\"words\":[{\"word\":\"the word or phrase exactly as it appears in your " + target.English + "\",\"meaning\":\"its meaning in this sentence\",\"why\":\"a short note\"}]");
+        prompt += " First output only the " + target.English + " text, with no notes, labels or quotation marks. "
+            + "Then output a line containing only " + WordsMarker + " followed by one line of JSON: {" + string.Join(",", fields) + "}. ";
+        if (coaching)
+            prompt += TipRule(native, target) + " ";
+        if (withWords)
+            prompt += WordRules(native);
+        return prompt.TrimEnd();
+    }
+
+    /// <summary>正向的写法点拨：帮学习者从「逐字翻」转到用外语的方式组织句子。</summary>
+    static string TipRule(Language native, Language target) =>
+        "\"tip\" is one short note in " + native.English + " (under 40 characters, or 20 words) that teaches the learner to think in " + target.English
+        + ": point out the one most useful way your " + target.English + " differs from a word-for-word translation "
+        + "(for example a different subject, a nominalization, the passive voice, a participle or relative clause, an inversion, a fixed expression), "
+        + "quoting the " + target.English + " words it applies to; use an empty string if there is nothing worth noting.";
+
+    /// <summary>反向的逐处纠错：只列真正的错误，不把润色当错误。</summary>
+    static string FixRules(Language native, Language target)
+    {
+        var n = native.English;
+        var t = target.English;
+        var literal = Languages.IsChineseEnglish(native, target) ? "Chinglish (a literal translation from Chinese)" : "a literal translation from " + n;
+        return "\"fixes\" lists every real mistake in the learner's text, most important first, at most 5: "
+            + "grammar (tense, agreement, articles, prepositions, plurals, word order, sentence structure), a wrong word, a wrong collocation, "
+            + literal + ", spelling, or punctuation and capitalization. "
+            + "For each, \"wrong\" is the shortest exact span copied from the learner's text, \"right\" is its correction, "
+            + "\"type\" is one of grammar, word, collocation, literal, spelling, punctuation, "
+            + "and \"why\" states the rule in " + n + " (under 30 characters, or 15 words). "
+            + "Do not list stylistic improvements as mistakes; use [] if there are no mistakes. "
+            + "\"habit\": if the mistakes come from thinking in " + n + ", one sentence in " + n
+            + " contrasting how " + n + " says it with how " + t + " thinks (under 50 characters, or 25 words); otherwise an empty string.";
     }
 
     /// <summary>English、Italian、Indonesian 前面是 an。</summary>
     static string Article(string word) => word.Length > 0 && "AEIOU".IndexOf(char.ToUpperInvariant(word[0])) >= 0 ? "an " : "a ";
 
     /// <summary>反向：先翻回母语，学习者对照着看自己写的是不是这个意思；再给一句更地道的说法和重点词。</summary>
-    static string ReversePrompt(string level, bool withWords, Language native, Language target)
+    static string ReversePrompt(string level, bool withWords, bool coaching, Language native, Language target)
     {
         var n = native.English;
         var t = target.English;
-        var json = withWords
-            ? "{\"better\":\"...\",\"words\":[{\"word\":\"...\",\"meaning\":\"...\",\"why\":\"...\"}]}"
-            : "{\"better\":\"...\"}";
+        var json = "{"
+            + (coaching ? "\"fixes\":[{\"wrong\":\"...\",\"right\":\"...\",\"type\":\"grammar\",\"why\":\"...\"}]," : "")
+            + "\"better\":\"...\""
+            + (coaching ? ",\"habit\":\"...\"" : "")
+            + (withWords ? ",\"words\":[{\"word\":\"...\",\"meaning\":\"...\",\"why\":\"...\"}]" : "")
+            + "}";
         var prompt = (Article(n) == "an " ? "An " : "A ") + n + "-speaking learner of " + t + " wrote the " + t + " text below. "
             + "Translate it into natural " + n + " that conveys exactly what the " + t + " says, so the learner can check whether it means what they intended; "
             + "if the " + t + " is unclear or ungrammatical, translate what it most plausibly means. Keep names, numbers, code and line breaks. "
@@ -1029,6 +1109,8 @@ sealed class Translator
             + "Then output a line containing only " + WordsMarker + " followed by one line of JSON: " + json + ". "
             + "\"better\" is the learner's text corrected and rewritten as " + BetterStyle(level, native, target) + ", keeping the meaning and every detail; "
             + "use an empty string if the original is already correct and natural at that level.";
+        if (coaching)
+            prompt += " " + FixRules(native, target);
         if (withWords)
         {
             prompt += " \"words\" lists words or phrases taken exactly from \"better\" (or from the original if \"better\" is empty), "
@@ -1037,6 +1119,24 @@ sealed class Translator
         }
 
         return prompt;
+    }
+
+    /// <summary>学习诊断：根据最近的错误总结问题、背后的思维习惯和练习办法，用母语写成纯文字。</summary>
+    static string DiagnosePrompt(string level, Language native, Language target)
+    {
+        var n = native.English;
+        var t = target.English;
+        var exam = Languages.IsChineseEnglish(native, target)
+            ? (level == "kaoyan" ? "考研英语（英语一 / 英语二）" : level == "cet6" ? "CET-6" : "everyday English")
+            : t + " at " + (level == "kaoyan" ? "an advanced" : level == "cet6" ? "an upper-intermediate" : "an everyday") + " level";
+        return "You are a strict but encouraging " + t + " writing coach for " + Article(n) + n + "-speaking learner preparing for " + exam + ". "
+            + "Below are the learner's recent " + t + " sentences with the mistakes found in them, and some sentences they translated from " + n + ". "
+            + "Write a diagnosis in " + n + ", as plain text with numbered sections and short lines, no Markdown symbols, no tables, at most 600 characters or 350 words:\n"
+            + "1. The 3 most frequent or most serious problems: name each, quote one real example from the data as wrong → right, and state the rule.\n"
+            + "2. The " + n + " thinking habit behind them and how to think in " + t + " instead (subject choice, verb forms, articles, sentence structure).\n"
+            + "3. Three concrete daily practices aimed at the exam's writing and translation tasks.\n"
+            + "4. Three short " + n + " sentences for the learner to translate, each targeting one problem above (no answers).\n"
+            + "Base everything on the data; do not invent mistakes the learner did not make.";
     }
 
     static string StudyPrompt(Language native, Language target) =>

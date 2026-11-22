@@ -41,6 +41,7 @@ sealed class OverlayForm : Form
     readonly ClickableEnglish _english = new();
     readonly TextLabel _betterCaption = new() { SingleLine = true };
     readonly ClickableEnglish _better = new();
+    readonly CoachPanel _coach = new();
     readonly TextLabel _error = new();
     readonly StudyStrip _study = new();
     readonly WordGlossPanel _gloss = new();
@@ -96,6 +97,7 @@ sealed class OverlayForm : Form
     bool _showEngine = true;
     bool _clickLookup = true;
     bool _showSpeak = true;
+    bool _chat;
     string _position = "input";
 
     public OverlayForm()
@@ -171,10 +173,10 @@ sealed class OverlayForm : Form
 
         Controls.AddRange(new Control[]
         {
-            _header, _hint, _source, _english, _betterCaption, _better, _error, _study, _gloss, _meta,
+            _header, _hint, _source, _english, _coach, _betterCaption, _better, _error, _study, _gloss, _meta,
             _write, _copy, _speak, _retry, _settings, _close,
         });
-        foreach (var control in new Control[] { this, _header, _hint, _source, _english, _betterCaption, _better, _error, _meta })
+        foreach (var control in new Control[] { this, _header, _hint, _source, _english, _coach, _betterCaption, _better, _error, _meta })
             AttachDrag(control);
         ApplyTheme();
     }
@@ -328,6 +330,8 @@ sealed class OverlayForm : Form
         _study.Style = config.StudyStyle;
         _native = config.Native;
         _target = config.Target;
+        _chat = config.UsesChatForTranslation;
+        _coach.SetLanguages(_native, _target);
         ApplyFonts();
         UpdateTips();
         if (IsHandleCreated && Visible)
@@ -344,6 +348,7 @@ sealed class OverlayForm : Form
         _resultShown = "";
         _translatedSource = "";
         _betterText = null;
+        _coach.Clear();
         _sourceIsTarget = false;
         ApplyFonts();
         _stale = false;
@@ -367,6 +372,7 @@ sealed class OverlayForm : Form
         _resultShown = "";
         _translatedSource = "";
         _betterText = null;
+        _coach.Clear();
         _sourceIsTarget = false;
         ApplyFonts();
         _stale = false;
@@ -440,6 +446,7 @@ sealed class OverlayForm : Form
         _translatedSource = source;
         _resultShown = text;
         _betterText = null;
+        _coach.Clear();
         _sourceIsTarget = toNative;
         SetDirection(toNative);
         ApplyFonts();
@@ -454,12 +461,14 @@ sealed class OverlayForm : Form
 
     /// <param name="toNative">反向：<paramref name="text"/> 是母语。</param>
     /// <param name="better">反向时更地道的说法；空字符串表示原句已经很地道，null 表示没有评价。</param>
-    public void ShowTranslation(string source, string text, string detail, bool toNative = false, string? better = null)
+    /// <param name="coach">纠错（反向）或写法点拨（正向），没有就是 null。</param>
+    public void ShowTranslation(string source, string text, string detail, bool toNative = false, string? better = null, Coaching? coach = null)
     {
         SourceText = source;
         _translatedSource = source;
         _resultShown = text;
         _betterText = toNative ? better : null;
+        _coach.Show(coach, toNative);
         _sourceIsTarget = toNative;
         SetDirection(toNative);
         ApplyFonts();
@@ -808,10 +817,17 @@ sealed class OverlayForm : Form
         var showFooter = _resultShown.Length > 0;
         var showBetter = BetterVisible;
         var showBetterText = showBetter && _betterText!.Length > 0;
+        // 没有错误、也不用改时，下面那句「已经很地道」就够了，不再说一遍没发现错误。
+        var showCoach = hasEnglish && _coach.HasContent && !(_toNative && _coach.Clean && _betterText is { Length: 0 });
+        // 没配大模型时英译中只有意思，告诉用户纠错要靠大模型。
+        var showChatHint = _toNative && hasEnglish && _betterText == null && !_chat;
         var hint = HintText();
 
-        _betterCaption.Text = showBetterText ? "更地道的说法" : "这句" + _target.Name + "已经很地道，不用改";
-        _betterCaption.Visible = showBetter;
+        _betterCaption.Text = showChatHint ? "配上大模型（推荐 DeepSeek）才会逐处纠错、给出地道说法：设置 → 大模型"
+            : showBetterText ? "更地道的说法" : "这句" + _target.Name + "已经很地道，不用改";
+        _betterCaption.SingleLine = !showChatHint;
+        _betterCaption.Visible = showBetter || showChatHint;
+        _coach.Visible = showCoach;
         _better.Visible = showBetterText;
         _source.Text = sourceText;
         _error.Text = _errorText;
@@ -842,6 +858,10 @@ sealed class OverlayForm : Form
             width = Math.Max(width, Measure(_errorText, _error.Font, measureWidth).Width + padX * 2 + _retry.PreferredWidth(Sc(8)) + Sc(8));
         if (showGloss)
             width = Math.Max(width, Sc(460));
+        if (showCoach)
+            width = Math.Max(width, Sc(_toNative ? 470 : 430));
+        if (showChatHint)
+            width = Math.Max(width, Sc(430));
         if (_streaming && Visible)
             width = Math.Max(width, Width);
         width = Math.Min(width, Sc(620));
@@ -870,8 +890,18 @@ sealed class OverlayForm : Form
             y += height;
         }
 
+        // 纠错（反向）或写法点拨（正向），紧跟在译文下面。
+        if (showCoach)
+        {
+            y += Sc(12);
+            var coachHeight = _coach.Arrange(inner, Sc);
+            _coach.SetBounds(padX, y, inner, coachHeight);
+            _coach.Invalidate();
+            y += coachHeight;
+        }
+
         // 反向：母语的意思下面是更地道的说法，可以点词查义、朗读、一键替换。
-        if (showBetter)
+        if (showBetter || showChatHint)
         {
             y += Sc(12);
             y = Place(_betterCaption, padX, y, inner);
