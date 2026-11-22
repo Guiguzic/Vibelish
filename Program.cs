@@ -673,7 +673,7 @@ static class Program
             var text = ok ? TerminalReader.ReadScreenTail(rows, cursor) : "";
             ConsoleBuffer.Release();
             _ = AttachConsole(AttachParentProcess);
-            Console.WriteLine("ok=" + ok + " err=" + error + " title=" + title);
+            Console.WriteLine("ok=" + ok + " err=" + error + " title=" + title + " cursor=" + cursor + "/" + rows.Count);
             Console.WriteLine("text=" + text.Replace("\n", "\\n"));
             foreach (var row in rows)
                 Console.WriteLine("row=" + row);

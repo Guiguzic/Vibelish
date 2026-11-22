@@ -97,7 +97,7 @@ static class TerminalReader
         var root = ProcessId(surface);
         string? fallback = null;
         uint fallbackPid = 0;
-        foreach (var pid in Candidates(root))
+        foreach (var pid in Candidates(root, hwnd))
         {
             if (!ConsoleBuffer.TryReadRows(pid, out var rows, out var title, out _, out var cursor))
                 continue;
@@ -145,14 +145,24 @@ static class TerminalReader
         }
     }
 
-    static IEnumerable<uint> Candidates(int rootPid)
+    /// <summary>
+    /// 先找这个终端窗口名下每个标签页的控制台，再按进程树找。
+    /// 从资源管理器、开始菜单打开的 PowerShell / cmd 会被交给 Windows Terminal 显示，
+    /// 它们的父进程是 explorer，不在 WindowsTerminal 进程底下；只按进程树找，
+    /// 在这种标签页里会读到别的标签页的字，卡片一直空着。
+    /// </summary>
+    static IEnumerable<uint> Candidates(int rootPid, IntPtr hostHwnd)
     {
+        var tabs = TabConsoles(hostHwnd);
+        foreach (var pid in tabs)
+            yield return (uint)pid;
+
         if (rootPid <= 0)
             yield break;
 
         var snapshot = ProcessSnapshot();
         var wanted = new List<int>();
-        var seen = new HashSet<int>();
+        var seen = new HashSet<int>(tabs);
         var queue = new Queue<int>();
         queue.Enqueue(rootPid);
         while (queue.Count > 0)
@@ -167,10 +177,47 @@ static class TerminalReader
             }
         }
 
-        wanted.Add(rootPid);
+        if (seen.Add(rootPid))
+            wanted.Add(rootPid);
         foreach (var pid in wanted.OrderBy(pid => Rank(ProcessNameOf(snapshot, pid))))
             yield return (uint)pid;
     }
+
+    /// <summary>Windows Terminal 给每个标签页建一个 PseudoConsoleWindow，属主是终端窗口，进程号就是那个标签页的控制台进程。</summary>
+    static List<int> TabConsoles(IntPtr hostHwnd)
+    {
+        var found = new List<int>();
+        if (hostHwnd == IntPtr.Zero)
+            return found;
+        var root = Native.GetAncestor(hostHwnd, Native.GaRoot);
+        if (root == IntPtr.Zero)
+            root = hostHwnd;
+        var cls = new StringBuilder(64);
+        EnumWindows((hwnd, lParam) =>
+        {
+            if (GetWindow(hwnd, GwOwner) != root)
+                return true;
+            cls.Clear();
+            Native.GetClassName(hwnd, cls, cls.Capacity);
+            if (!cls.ToString().Equals("PseudoConsoleWindow", StringComparison.Ordinal))
+                return true;
+            Native.GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid != 0 && !found.Contains((int)pid))
+                found.Add((int)pid);
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    const uint GwOwner = 4;
+
+    delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    static extern IntPtr GetWindow(IntPtr hwnd, uint command);
 
     static int Rank(string name)
     {
