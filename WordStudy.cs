@@ -32,7 +32,10 @@ sealed record CoachFix(string Wrong, string Right, string Type, string Why);
 /// <param name="Tip">正向时的写法点拨：译文和逐字直译哪里不一样。</param>
 /// <param name="Parts">句子拆解：外语句子按主语、谓语、宾语……分成几块，每块一句大白话。</param>
 /// <param name="Checked">这次请大模型纠错了（关了纠错只要拆解时为 false，卡片不说「没发现错误」）。</param>
-sealed record Coaching(IReadOnlyList<CoachFix> Fixes, string Habit, string Tip, IReadOnlyList<SentencePart>? Parts = null, bool Checked = true)
+/// <param name="Core">拆解的那句只留主干（主语 + 谓语 + 宾语 / 补语），先看骨架。</param>
+/// <param name="Order">英文和中文在这句里语序怎么不一样：英文先说主干，修饰往后挂。</param>
+sealed record Coaching(IReadOnlyList<CoachFix> Fixes, string Habit, string Tip, IReadOnlyList<SentencePart>? Parts = null, bool Checked = true,
+    string Core = "", string Order = "")
 {
     public IReadOnlyList<SentencePart> PartList => Parts ?? [];
 
@@ -74,8 +77,27 @@ sealed record Coaching(IReadOnlyList<CoachFix> Fixes, string Habit, string Tip, 
 }
 
 /// <summary>句子里的一块：原文、成分（subject、verb……）、这块在句子里干什么。</summary>
-sealed record SentencePart(string Text, string Role, string Note)
+/// <param name="Of">这块挂在谁身上、给谁做说明：定语修饰的名词，宾语跟的动词……谓语自己为空。</param>
+sealed record SentencePart(string Text, string Role, string Note, string Of = "")
 {
+    /// <summary>「修饰 speed」「做 believe 的宾语」这类大白话，说清这块和谁有关系。</summary>
+    public static string Relation(string role, string of, Language native)
+    {
+        if (of.Length == 0)
+            return "";
+        if (!native.Code.StartsWith("zh", StringComparison.OrdinalIgnoreCase))
+            return "→ " + of;
+        return role switch
+        {
+            "subject" or "subject-clause" => "做 " + of + " 这个动作的",
+            "object" or "object-clause" => "是 " + of + " 的对象",
+            "complement" => "补充说明 " + of,
+            "attributive" or "attributive-clause" => "修饰 " + of,
+            "adverbial" or "adverbial-clause" => "说明 " + of + " 的情况",
+            _ => "和 " + of + " 有关",
+        };
+    }
+
     public static readonly string[] Roles =
     [
         "subject", "verb", "object", "complement", "adverbial", "attributive",
@@ -453,13 +475,14 @@ static class WordStudy
                     var text = ReadString(item, "text");
                     if (text.Length == 0)
                         continue;
-                    parts.Add(new SentencePart(Cut(text, 120), SentencePart.NormalizeRole(ReadString(item, "role")), Cut(ReadString(item, "note"), 160)));
+                    parts.Add(new SentencePart(Cut(text, 120), SentencePart.NormalizeRole(ReadString(item, "role")), Cut(ReadString(item, "note"), 160), Cut(ReadString(item, "of"), 40)));
                     if (parts.Count == 10)
                         break;
                 }
             }
 
-            return new Coaching(fixes, Cut(ReadString(root, "habit"), 300), Cut(ReadString(root, "tip"), 300), parts);
+            return new Coaching(fixes, Cut(ReadString(root, "habit"), 300), Cut(ReadString(root, "tip"), 300), parts,
+                Core: Cut(ReadString(root, "core"), 160), Order: Cut(ReadString(root, "order"), 300));
         }
         catch (Exception)
         {
@@ -532,6 +555,9 @@ static class WordStudy
         if (SentencePart.NormalizeRole("object clause") != "object-clause" || SentencePart.NormalizeRole("定语从句") != "attributive-clause"
             || SentencePart.NormalizeRole("Adverbial_Clause") != "adverbial-clause" || SentencePart.NormalizeRole("subject") != "subject")
             return "normalize roles";
+        var rel = ParseCoach("{\"parts\":[{\"text\":\"at which it travels\",\"role\":\"attributive clause\",\"of\":\"speed\"}],\"core\":\"It is due to speed\",\"order\":\"英文先说 speed\"}");
+        if (rel is not { Core: "It is due to speed" } || rel.PartList[0].Of != "speed" || rel.Order.Length == 0)
+            return "parse relation";
         if (ParseCoach("{\"better\":\"x\"}") != null || ParseCoach("{\"fixes\":[]}")?.Fixes.Count != 0 || ParseCoach("{\"tip\":\"换主语\"}")?.Tip != "换主语")
             return "parse coach empty";
 

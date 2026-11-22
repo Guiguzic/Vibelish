@@ -32,7 +32,7 @@ sealed class CoachPanel : Control
     }
 
     /// <summary>有东西可显示：反向纠错时总要说一句（没错误也说），正向时要有点拨；有拆解也算。</summary>
-    public bool HasContent => _coach != null && ((_reverse && _coach.Checked) || _coach.Tip.Length > 0 || _coach.PartList.Count > 0);
+    public bool HasContent => _coach != null && ((_reverse && _coach.Checked) || _coach.Tip.Length > 0 || _coach.PartList.Count > 0 || _coach.Order.Length > 0);
 
     /// <summary>反向时一处错误、一句思维提示、一块拆解都没有。</summary>
     public bool Clean => _coach is { Fixes.Count: 0, Habit.Length: 0 } && _coach.PartList.Count == 0;
@@ -101,7 +101,7 @@ sealed class CoachPanel : Control
         var extra = _reverse ? "思维" : "点拨";
         var parts = coach.PartList;
         var roleLabels = parts.Select(part => SentencePart.Label(part.Role, _native)).ToList();
-        var chipWidth = labels.Append(extra).Concat(roleLabels).Max(label => Measure(label, chipFont, 200, false).Width) + chipPad * 2;
+        var chipWidth = labels.Append(extra).Append("骨架").Append("语序").Concat(roleLabels).Max(label => Measure(label, chipFont, 200, false).Width) + chipPad * 2;
         var partFont = Theme.CardText(_target.Font, 10F, FontStyle.Bold);
         var x0 = chipWidth + gap;
         var avail = Math.Max(scale(60), width - x0);
@@ -157,21 +157,38 @@ sealed class CoachPanel : Control
             y += noteHeight + scale(9);
         }
 
-        if (parts.Count > 0)
+        if (parts.Count > 0 || coach.Core.Length > 0 || coach.Order.Length > 0)
         {
             if (y > 0)
                 y += scale(3);
             var caption = _beginner && _native.Code.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
-                ? "句子拆解 · 一块一块看这句是怎么搭起来的"
+                ? "句子拆解 · 先看骨架，再看每块挂在谁身上"
                 : "句子拆解";
             y += AddText(caption, captionFont, p.Dim, 0, y, width) + scale(6);
+
+            // 骨架：只留主语、谓语、宾语，先抓住这句到底在说什么。
+            if (coach.Core.Length > 0)
+            {
+                AddChip("骨架", p.Text, y, partFont.Height);
+                y += AddText(coach.Core, partFont, p.Text, x0, y, avail) + scale(8);
+            }
+
+            // 语序：英文先说主干、修饰往后挂；中文把修饰堆在前面。
+            if (coach.Order.Length > 0)
+            {
+                AddChip("语序", p.Accent, y, noteFont.Height);
+                y += AddText(coach.Order, noteFont, p.Body, x0, y, avail) + scale(10);
+            }
+
             for (var i = 0; i < parts.Count; i++)
             {
                 var part = parts[i];
                 var color = RoleColor(part.Role, p);
                 AddChip(roleLabels[i], color, y, partFont.Height);
                 y += AddText(part.Text, partFont, p.Text, x0, y, avail);
-                var plain = _beginner ? SentencePart.Plain(part.Role, _native) : "";
+                // 先说这块挂在谁身上（修饰 speed、是 believe 的对象），没有就说这种成分一般干什么。
+                var relation = SentencePart.Relation(part.Role, part.Of, _native);
+                var plain = relation.Length > 0 ? relation : _beginner ? SentencePart.Plain(part.Role, _native) : "";
                 var line = plain.Length > 0 && part.Note.Length > 0 ? plain + " · " + part.Note : plain.Length > 0 ? plain : part.Note;
                 if (line.Length > 0)
                     y += scale(2) + AddText(line, noteFont, p.Muted, x0, y + scale(2), avail);

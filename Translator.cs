@@ -13,6 +13,7 @@ namespace Vibelish;
 /// <param name="ToNative">反向（在学的语言 → 母语，Text 是母语）还是正向（Text 是在学的语言）。</param>
 /// <param name="Better">反向时大模型给的更地道的说法；空字符串表示原句已经很地道，null 表示没有评价（免费引擎）。</param>
 /// <param name="Coach">纠错、思维提示、写法点拨；免费引擎或关了「纠错与点拨」时是 null。</param>
+/// <param name="ExplainPending">译文先回来了，讲解（纠错、点拨、拆解、重点词）要再调 <see cref="Translator.ExplainAsync"/> 拿。</param>
 sealed record TranslateResult(
     bool Ok,
     string Text,
@@ -22,7 +23,8 @@ sealed record TranslateResult(
     long TotalMs = 0,
     bool ToNative = false,
     string? Better = null,
-    Coaching? Coach = null);
+    Coaching? Coach = null,
+    bool ExplainPending = false);
 
 sealed class Translator
 {
@@ -456,42 +458,131 @@ sealed class Translator
         var target = _config.Target;
         var coaching = _config.Coaching && !Reading.Value;
         var parts = _config.SentenceParts;
-        var beginner = _config.Beginner;
+        // 译文先单独要：讲解（纠错、点拨、拆解、重点词）很长，和译文一起要的话，
+        // 慢一点的接口要等整段生成完才把译文送回来，一句话要等一分多钟。讲解随后用 ExplainAsync 另要。
         var prompt = toNative
-            ? ReversePrompt(level, withWords, coaching, native, target, beginner, parts)
-            : TranslationPrompt(level, withWords, coaching, native, target, beginner, parts);
+            ? ReversePrompt(level, false, false, native, target)
+            : TranslationPrompt(level, false, false, native, target);
         var chat = await ChatAsync(prompt, text, level == "kaoyan" ? 0.3 : 0.2, cancellationToken, onDelta);
         if (!chat.Ok)
             return chat;
 
-        var (translated, words, better) = SplitWords(chat.Text);
+        var (translated, _, better) = SplitWords(chat.Text);
         if (translated.Length == 0)
             return new TranslateResult(false, "", "接口没有返回译文");
-        var coach = coaching || parts ? SplitCoach(chat.Text) : null;
+        if (!toNative)
+            better = null;
+        else if (better != null && Lang.SameSentence(better, text))
+            better = "";
+
+        return new TranslateResult(true, translated, ModelLabel() + " · " + (toNative ? AppConfig.PairLabel(target, native) : _config.LevelLabel),
+            null, first, watch.ElapsedMilliseconds, toNative, better, null, ExplainPending: coaching || parts || withWords);
+    }
+
+    readonly Dictionary<string, (Coaching? Coach, IReadOnlyList<StudyWord>? Words)> _explainCache = new();
+
+    /// <summary>
+    /// 第二步：译文已经显示了，再要讲解——自己写外语时逐处纠错和思维提示，写母语时写法点拨；
+    /// 开了就加上句子拆解（骨架、语序、每块挂在谁身上）和重点词。在线程池上跑，不占界面线程。
+    /// </summary>
+    public Task<(Coaching? Coach, IReadOnlyList<StudyWord>? Words)> ExplainAsync(string source, TranslateResult result, CancellationToken cancellationToken, bool reading = false) =>
+        Task.Run(() => ExplainCoreAsync(source.Trim(), result, cancellationToken, reading), cancellationToken);
+
+    async Task<(Coaching? Coach, IReadOnlyList<StudyWord>? Words)> ExplainCoreAsync(string source, TranslateResult result, CancellationToken cancellationToken, bool reading)
+    {
+        var coaching = _config.Coaching && !reading;
+        var parts = _config.SentenceParts;
+        var withWords = _config.StudyWords;
+        if (!_config.HasChatApi || !(coaching || parts || withWords))
+            return (null, null);
+
+        var native = _config.Native;
+        var target = _config.Target;
+        var toNative = result.ToNative;
+        var key = string.Join("\n", _config.EnglishLevel, _config.OpenAiBaseUrl, _config.OpenAiModel, withWords, coaching, parts, _config.ExplainLevel,
+            _config.NativeLanguage, _config.TargetLanguage, toNative, source, result.Text, result.Better ?? "");
+        lock (_explainCache)
+        {
+            if (_explainCache.TryGetValue(key, out var hit))
+                return hit;
+        }
+
+        var prompt = ExplainPrompt(toNative, withWords, coaching, parts, _config.Beginner, native, target);
+        var user = toNative
+            ? "Learner's " + target.English + " text:\n" + source + "\n\nCorrected version:\n" + (result.Better is { Length: > 0 } b ? b : source)
+                + "\n\n" + native.English + " meaning:\n" + result.Text
+            : native.English + " text:\n" + source + "\n\n" + target.English + " translation:\n" + result.Text;
+        var chat = await ChatAsync(prompt, user, 0.2, cancellationToken);
+        if (!chat.Ok)
+        {
+            TraceLog.Note("explain fail " + TraceLog.Safe(chat.Detail));
+            return (null, null);
+        }
+
+        var json = ThinkBlock.Replace(chat.Text, "");
+        var words = withWords ? WordStudy.ParseStudy(json) : null;
+        var coach = coaching || parts ? WordStudy.ParseCoach(json) : null;
         if (coach != null)
         {
             coach = coach with { Checked = coaching };
             if (!coaching)
                 coach = coach with { Fixes = Array.Empty<CoachFix>(), Habit = "", Tip = "" };
             if (!parts)
-                coach = coach with { Parts = null };
+                coach = coach with { Parts = null, Core = "", Order = "" };
+            coach = toNative ? coach with { Tip = "" } : coach with { Fixes = Array.Empty<CoachFix>(), Habit = "" };
+            if (!toNative && coach is { Tip.Length: 0, PartList.Count: 0, Order.Length: 0 })
+                coach = null;
         }
 
-        if (!toNative)
+        var explained = (coach, words is { Count: > 0 } ? words : null);
+        lock (_explainCache)
         {
-            better = null;
-            coach = coach is { Tip.Length: > 0 } or { PartList.Count: > 0 } ? coach with { Fixes = Array.Empty<CoachFix>(), Habit = "" } : null;
-        }
-        else
-        {
-            if (better != null && Lang.SameSentence(better, text))
-                better = "";
-            if (coach != null)
-                coach = coach with { Tip = "" };
+            if (_explainCache.Count > 200)
+                _explainCache.Clear();
+            _explainCache[key] = explained;
         }
 
-        return new TranslateResult(true, translated, ModelLabel() + " · " + (toNative ? AppConfig.PairLabel(target, native) : _config.LevelLabel),
-            withWords ? words : null, first, watch.ElapsedMilliseconds, toNative, better, coach);
+        return explained;
+    }
+
+    /// <summary>讲解用的提示词：只回一行 JSON，规则和以前跟译文一起要时一样。</summary>
+    static string ExplainPrompt(bool toNative, bool withWords, bool coaching, bool parts, bool beginner, Language native, Language target)
+    {
+        var n = native.English;
+        var t = target.English;
+        var fields = new List<string>();
+        if (toNative && coaching)
+        {
+            fields.Add("\"fixes\":[{\"wrong\":\"...\",\"right\":\"...\",\"type\":\"grammar\",\"why\":\"...\"}]");
+            fields.Add("\"habit\":\"...\"");
+        }
+
+        if (!toNative && coaching)
+            fields.Add("\"tip\":\"...\"");
+        if (parts)
+            fields.Add(PartsField);
+        if (withWords)
+            fields.Add("\"words\":[{\"word\":\"...\",\"meaning\":\"...\",\"why\":\"...\"}]");
+
+        var prompt = toNative
+            ? (Article(n) == "an " ? "An " : "A ") + n + "-speaking learner of " + t + " wrote a " + t + " text; you get it, a corrected version and its " + n + " meaning. "
+            : (Article(n) == "an " ? "An " : "A ") + n + "-speaking learner of " + t + " wrote a " + n + " text; you get it and its " + t + " translation. ";
+        prompt += "Help the learner learn from it. Return only one line of JSON, no Markdown, no other text: {" + string.Join(",", fields) + "}. ";
+        if (toNative && coaching)
+            prompt += FixRules(native, target, beginner) + " ";
+        if (!toNative && coaching)
+            prompt += TipRule(native, target, beginner).Replace("your " + t, "the " + t + " translation") + " ";
+        if (parts)
+            prompt += PartsRule(native, target, toNative ? "the corrected version" : "the " + t + " translation", beginner) + " ";
+        if (beginner && (coaching || parts))
+            prompt += BeginnerRule(native) + " ";
+        if (withWords)
+        {
+            prompt += "\"words\" lists words or phrases taken exactly from " + (toNative ? "the corrected version" : "the " + t + " translation")
+                + ", with \"meaning\" their meaning in this sentence and \"why\" a short note. " + WordRules(native);
+        }
+
+        return prompt.TrimEnd();
     }
 
     /// <summary>学习记录里的「让大模型分析我的问题」：把最近的错误和句子交给大模型，写一份诊断。</summary>
@@ -562,7 +653,8 @@ sealed class Translator
         // 逐字输出时是「60 秒没有新内容」才算超时（每来一段就重新计时），长的讲解不会被拦腰截断；
         // 不逐字输出就整体给 2 分钟。
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(stream ? ChatTimeout : ChatTimeout * 2);
+        // 第一段内容最多等 2 分钟（有的中转接口不真的逐字输出，整段生成完才一次发回来）。
+        timeout.CancelAfter(ChatTimeout * 2);
         if (onDelta != null)
         {
             var forward = onDelta;
@@ -570,7 +662,7 @@ sealed class Translator
             {
                 try
                 {
-                    timeout.CancelAfter(ChatTimeout);
+                    timeout.CancelAfter(ChatTimeout * 2);
                 }
                 catch (ObjectDisposedException)
                 {
@@ -653,7 +745,7 @@ sealed class Translator
         }
         catch (OperationCanceledException)
         {
-            return new TranslateResult(false, "", "接口超时（" + (int)ChatTimeout.TotalSeconds + " 秒没有响应）");
+            return new TranslateResult(false, "", "接口超时（" + (int)(ChatTimeout * 2).TotalSeconds + " 秒没有拿到回答，接口太慢或网络不通）");
         }
         catch (JsonException)
         {
@@ -1116,7 +1208,7 @@ sealed class Translator
         return prompt.TrimEnd();
     }
 
-    const string PartsField = "\"parts\":[{\"text\":\"...\",\"role\":\"subject\",\"note\":\"...\"}]";
+    const string PartsField = "\"core\":\"...\",\"order\":\"...\",\"parts\":[{\"text\":\"...\",\"role\":\"subject\",\"of\":\"...\",\"note\":\"...\"}]";
 
     /// <summary>句子拆解：按成分分块，每块一句话说它在句子里干什么。</summary>
     static string PartsRule(Language native, Language target, string which, bool beginner) =>
@@ -1125,10 +1217,19 @@ sealed class Translator
         + "\"role\" (one of subject, verb, object, complement, adverbial, attributive, subject-clause, object-clause, attributive-clause, adverbial-clause, connector, other; "
         + "\"verb\" is the whole verb phrase with its auxiliaries; a whole subordinate clause is one block named by what it does, for example a that-clause after "
         + "\"believe\" is object-clause, a which/who clause is attributive-clause, a because/when/if clause is adverbial-clause; "
-        + "an introductory participle phrase that sets the scene is adverbial) and \"note\" in " + native.English + ": "
+        + "an introductory participle phrase that sets the scene is adverbial), "
+        + "\"of\" (the exact word or short phrase in that sentence this block hangs on and serves: the noun an attributive or attributive-clause describes, "
+        + "the verb whose object an object or object-clause is, the verb a subject does, the verb or whole sentence an adverbial describes, "
+        + "the subject or object a complement completes; an empty string for the main verb) and \"note\" in " + native.English + ": "
         + (beginner
-            ? "what this block tells us, in plain words a beginner understands (who does it, what they do, to what, when, where, how, why), under 30 characters (or 15 words)."
-            : "its function, under 16 characters (or 8 words).");
+            ? "what this block tells us about the \"of\" word, in plain words a beginner understands, under 30 characters (or 15 words)."
+            : "its function, under 16 characters (or 8 words).")
+        + " \"core\" is that sentence cut down to its bare skeleton in " + target.English + " (only the subject, the main verb and its object or complement; "
+        + "drop every modifier and clause, keep a short placeholder like \"something\" if the object is a clause). "
+        + "\"order\" is one plain " + native.English + " sentence (under " + (beginner ? "90 characters, or 45 words" : "50 characters, or 25 words") + ") "
+        + "that teaches " + target.English + " thinking for this sentence: how it orders the information differently from " + native.English
+        + " — for example " + target.English + " states the core first and hangs the details after it with clauses and phrases, "
+        + "while " + native.English + " stacks modifiers in front of the noun — quoting the words involved.";
 
     /// <summary>小白模式：不用术语；非用不可的术语当场用大白话解释，并指出这句里是哪几个词。</summary>
     static string BeginnerRule(Language native) =>

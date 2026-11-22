@@ -39,7 +39,10 @@ sealed class ClickableEnglish : Control
         }
     }
 
-    readonly record struct Span(int Start, int End, string Role);
+    readonly record struct Span(int Start, int End, string Role, string Of);
+
+    // 每块挂着的那个词（定语修饰的名词、宾语跟的动词），用同色虚线标出来，看出谁在给谁做说明。
+    readonly List<Span> _heads = new();
 
     IReadOnlyList<SentencePart>? _parts;
     Language _labelLanguage = Languages.Find("zh-CN");
@@ -62,6 +65,7 @@ sealed class ClickableEnglish : Control
     void MapSpans()
     {
         _spans.Clear();
+        _heads.Clear();
         if (_parts is not { Count: > 0 } parts || _english.Length == 0)
             return;
         var cursor = 0;
@@ -75,11 +79,30 @@ sealed class ClickableEnglish : Control
                 at = _english.IndexOf(text, StringComparison.OrdinalIgnoreCase);
             if (at < 0 || _spans.Any(span => at < span.End && at + text.Length > span.Start))
                 continue;
-            _spans.Add(new Span(at, at + text.Length, part.Role));
+            _spans.Add(new Span(at, at + text.Length, part.Role, part.Of.Trim()));
             cursor = at + text.Length;
         }
 
         _spans.Sort((a, b) => a.Start.CompareTo(b.Start));
+
+        // 挂着的词：取离这块最近的那一处（一般就在前面），不能落在这块自己里面。
+        foreach (var span in _spans)
+        {
+            if (span.Of.Length == 0)
+                continue;
+            var best = -1;
+            for (var at = _english.IndexOf(span.Of, StringComparison.OrdinalIgnoreCase); at >= 0;
+                 at = _english.IndexOf(span.Of, at + 1, StringComparison.OrdinalIgnoreCase))
+            {
+                if (at >= span.Start && at < span.End)
+                    continue;
+                if (best < 0 || Math.Abs(at - span.Start) < Math.Abs(best - span.Start))
+                    best = at;
+            }
+
+            if (best >= 0)
+                _heads.Add(new Span(best, best + span.Of.Length, span.Role, ""));
+        }
     }
 
     Font LabelFont => Theme.Card(7.5F);
@@ -101,6 +124,21 @@ sealed class ClickableEnglish : Control
             _runStarts[i] = at;
             cursor = at + text.Length;
         }
+    }
+
+    int HeadOf(int run)
+    {
+        if (run >= _runStarts.Length)
+            return -1;
+        var start = _runStarts[run];
+        var end = start + _layout.Runs[run].Text.Length;
+        for (var i = 0; i < _heads.Count; i++)
+        {
+            if (start >= _heads[i].Start && end <= _heads[i].End)
+                return i;
+        }
+
+        return -1;
     }
 
     int SpanOf(int run)
@@ -265,6 +303,9 @@ sealed class ClickableEnglish : Control
                 if (labelled.Add(spanIndex) && !string.IsNullOrWhiteSpace(run.Text))
                 {
                     var label = SentencePart.Label(_spans[spanIndex].Role, _labelLanguage);
+                    var of = _spans[spanIndex].Of;
+                    if (of.Length > 0)
+                        label += " → " + (of.Length > 14 ? of[..13] + "…" : of);
                     var size = TextRenderer.MeasureText(label, labelFont, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
                     var lineKey = run.Bounds.Y;
                     var x = Math.Max(run.Bounds.Left, labelRight.TryGetValue(lineKey, out var right) ? right + 4 : 0);
@@ -281,6 +322,17 @@ sealed class ClickableEnglish : Control
                 using var path = Theme.RoundedRect(box, radius);
                 using var fill = new SolidBrush(p.AccentSoft);
                 g.FillPath(fill, path);
+            }
+
+            var headIndex = spanIndex < 0 && _heads.Count > 0 ? HeadOf(i) : -1;
+            if (headIndex >= 0)
+            {
+                using var dash = new Pen(SentencePart.ColorFor(_heads[headIndex].Role, p.Dark), stroke)
+                {
+                    DashStyle = System.Drawing.Drawing2D.DashStyle.Dash,
+                };
+                var under = run.Bounds.Bottom + 1;
+                g.DrawLine(dash, run.Bounds.Left, under, run.Bounds.Right, under);
             }
 
             TextRenderer.DrawText(g, run.Text, Font, run.Bounds, spanIndex >= 0 && ForeColor != p.Dim ? roleColor : ForeColor, flags);

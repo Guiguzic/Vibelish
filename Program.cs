@@ -555,12 +555,14 @@ static class Program
                         what == "parts"
                             ? new[]
                             {
-                                new SentencePart("Arduous as preparation for the postgraduate entrance examination may be", "adverbial-clause", "让步：不管准备考研多辛苦"),
-                                new SentencePart("I", "subject", "说的是「我」"),
+                                new SentencePart("Arduous as preparation for the postgraduate entrance examination may be", "adverbial-clause", "让步：不管准备考研多辛苦", "remain convinced"),
+                                new SentencePart("I", "subject", "说的是「我」", "remain convinced"),
                                 new SentencePart("remain convinced", "verb", "一直相信"),
-                                new SentencePart("that perseverance will ultimately yield its rewards", "object-clause", "相信的内容：坚持终会有回报"),
+                                new SentencePart("that perseverance will ultimately yield its rewards", "object-clause", "相信的内容：坚持终会有回报", "convinced"),
                             }
-                            : null));
+                            : null,
+                        Core: what == "parts" ? "I remain convinced (that …)" : "",
+                        Order: what == "parts" ? "中文先说「虽然辛苦」再说「我相信」；英文先立住「我相信」这个主干，相信的内容用 that 从句挂在后面。" : ""));
                 card.ShowStudy(new[]
                 {
                     new StudyWord("arduous", "艰辛的", "比 hard 更书面"),
@@ -915,7 +917,7 @@ static class Program
             var rest = new List<string>();
             for (var i = 2; i < args.Length; i++)
             {
-                if (!TryApplyPair(probe, args[i]))
+                if (args[i] != "lite" && !TryApplyPair(probe, args[i]))
                     rest.Add(args[i]);
             }
 
@@ -928,6 +930,14 @@ static class Program
                 probe.OpenAiBaseUrl = rest[1];
                 probe.OpenAiModel = rest[2];
             }
+            // 加 lite：关掉纠错、重点词、拆解，只量翻译本身多快。
+            if (args.Contains("lite"))
+            {
+                probe.Coaching = false;
+                probe.StudyWords = false;
+                probe.SentenceParts = false;
+            }
+
             probe = probe.Normalize();
             var translator = new Translator(probe);
             var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -938,6 +948,13 @@ static class Program
                     first = watch.ElapsedMilliseconds;
             }).GetAwaiter().GetResult();
             Console.WriteLine(result.Ok ? result.Text : "ERROR " + result.Detail);
+            var explainWatch = System.Diagnostics.Stopwatch.StartNew();
+            if (result is { Ok: true, ExplainPending: true })
+            {
+                var (explainedCoach, explainedWords) = translator.ExplainAsync(args[1], result, CancellationToken.None).GetAwaiter().GetResult();
+                result = result with { Coach = explainedCoach, Words = explainedWords };
+                Console.WriteLine("explain=" + explainWatch.ElapsedMilliseconds + "ms");
+            }
             if (result.Better is { Length: > 0 } better)
                 Console.WriteLine("better=" + better);
             if (result.Coach is { } coach)
@@ -948,8 +965,12 @@ static class Program
                     Console.WriteLine("habit=" + coach.Habit);
                 if (coach.Tip.Length > 0)
                     Console.WriteLine("tip=" + coach.Tip);
+                if (coach.Core.Length > 0)
+                    Console.WriteLine("core=" + coach.Core);
+                if (coach.Order.Length > 0)
+                    Console.WriteLine("order=" + coach.Order);
                 foreach (var part in coach.PartList)
-                    Console.WriteLine("part=[" + part.Role + "] " + part.Text + " | " + part.Note);
+                    Console.WriteLine("part=[" + part.Role + (part.Of.Length > 0 ? " → " + part.Of : "") + "] " + part.Text + " | " + part.Note);
             }
             Console.WriteLine("engine=" + result.Detail + " pair=" + probe.NativeLanguage + ">" + probe.TargetLanguage
                 + " dir=" + (result.ToNative ? "reverse" : "forward")

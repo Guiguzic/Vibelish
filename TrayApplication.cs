@@ -78,6 +78,8 @@ sealed class TrayApplicationContext : ApplicationContext
     CancellationTokenSource? _lookup;
     CancellationTokenSource? _senseRewrite;
     CancellationTokenSource? _study;
+    CancellationTokenSource? _explain;
+    string _explainFor = "";
     long _wordClickAt;
     string _wordClick = "";
 
@@ -815,13 +817,15 @@ sealed class TrayApplicationContext : ApplicationContext
             _lastResult = (sentence, result);
             if (!reading && string.Equals(sentence, _recordAfter, StringComparison.Ordinal))
                 Record(sentence, result);
+            if (result.ExplainPending)
+                _ = ExplainAsync(sentence, result, reading);
             if (!reading)
                 ApplyTranslation(result.ToNative);
             if (!reading && _capturing && string.Equals(sentence, _writeAfter, StringComparison.Ordinal))
                 WriteNow(sentence);
             if (result.Words is { Count: > 0 } words)
                 _overlay.ShowStudy(words); // 和译文同一次请求带回来的，不用再等。
-            else if (_config.StudyWords && _config.HasChatApi)
+            else if (_config.StudyWords && _config.HasChatApi && !result.ExplainPending)
                 _ = StartStudyAsync(result.ToNative ? _overlay.LookupSentence : result.Text, result.ToNative ? result.Text : sentence);
         }
         catch (OperationCanceledException)
@@ -848,6 +852,52 @@ sealed class TrayApplicationContext : ApplicationContext
             if (_translation == source)
                 _translation = null;
             source.Dispose();
+        }
+    }
+
+    /// <summary>译文显示以后再要讲解（纠错、点拨、拆解、重点词），回来了补到卡片上；写完的句子等讲解到了再记。</summary>
+    async Task ExplainAsync(string sentence, TranslateResult result, bool reading)
+    {
+        // 换了一句就不要上一句的讲解了；上一句等着记进学习记录的除外。
+        if (!string.Equals(_explainFor, _recordAfter, StringComparison.Ordinal))
+            _explain?.Cancel();
+        var cts = new CancellationTokenSource();
+        _explain = cts;
+        _explainFor = sentence;
+        if (string.Equals(_overlay.ResultText, result.Text, StringComparison.Ordinal))
+            _overlay.BeginStudy();
+        try
+        {
+            var (coach, words) = await _translator.ExplainAsync(sentence, result, cts.Token, reading);
+            if (cts.IsCancellationRequested)
+                return;
+            var merged = result with { Coach = coach, Words = words, ExplainPending = false };
+            if (string.Equals(_lastResult.Sentence, sentence, StringComparison.Ordinal))
+                _lastResult = (sentence, merged);
+            AddRecent(sentence, result.Text, result.ToNative, result.Better, coach);
+            if (!reading && string.Equals(sentence, _recordAfter, StringComparison.Ordinal))
+                Record(sentence, merged);
+
+            // 卡片上还是这句，才往上补。
+            if (!string.Equals(_overlay.ResultText, result.Text, StringComparison.Ordinal))
+                return;
+            if (coach != null)
+                _overlay.ShowTranslation(sentence, result.Text, result.Detail, result.ToNative, result.Better, coach);
+            if (words is { Count: > 0 })
+                _overlay.ShowStudy(words);
+            else
+                _overlay.EndStudy();
+            TraceLog.Note("explain ok fixes=" + (coach?.Fixes.Count ?? 0) + " parts=" + (coach?.PartList.Count ?? 0) + " words=" + (words?.Count ?? 0));
+        }
+        catch (OperationCanceledException)
+        {
+            // 换了一句。
+        }
+        catch (Exception ex)
+        {
+            if (string.Equals(_overlay.ResultText, result.Text, StringComparison.Ordinal))
+                _overlay.EndStudy();
+            TraceLog.Note("explain error " + TraceLog.Safe(ex.Message));
         }
     }
 
@@ -1100,6 +1150,13 @@ sealed class TrayApplicationContext : ApplicationContext
     /// <summary>写完的那句记进学习记录：只记大模型翻的（有纠错或点拨），关了「记到学习记录」就不记。</summary>
     void Record(string sentence, TranslateResult result)
     {
+        // 讲解还没回来：等它回来再记。
+        if (result.ExplainPending)
+        {
+            _recordAfter = sentence;
+            return;
+        }
+
         _recordAfter = "";
         // 只拆解、没纠错（关了纠错）的不记：错题本要的是错误和点拨。
         if (!_config.KeepNotebook || result.Coach is not { Checked: true })
